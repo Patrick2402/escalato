@@ -19,6 +19,7 @@ type Policy struct {
 	Name      string
 	Type      string // "Inline", "Managed"
 	Arn       string
+	Document  string // Dokument polityki JSON
 }
 
 
