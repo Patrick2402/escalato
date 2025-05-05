@@ -47,15 +47,46 @@ func validateRules(rules []models.Rule) error {
 
 		switch rule.Type {
 		case models.RoleTrustPolicy:
-			if rule.Condition.Service == "" {
+			// Specjalna obsługa dla reguły AssumeRole bez warunków lub Cross Account Access
+			if rule.Condition.RequireConditions && rule.Condition.Action == "sts:AssumeRole" {
+				// Jeśli to reguła wymagająca warunków dla AssumeRole, nie wymagamy service
+				continue
+			}
+			
+			if rule.Condition.AWSPrincipal {
+				// Dla reguł cross-account access, nie wymagamy service
+				continue
+			}
+			
+			var hasService bool
+			switch svc := rule.Condition.Service.(type) {
+			case string:
+				hasService = svc != ""
+			case []interface{}, []string:
+				hasService = true  // Assume non-empty array
+			default:
+				hasService = false
+			}
+			
+			if !hasService {
 				return fmt.Errorf("rule %s of type %s requires a service condition", rule.Name, rule.Type)
 			}
 		case models.RolePermissions, models.UserPermissions:
 			if rule.Condition.ManagedPolicy != "" {
 				continue
 			}
-            
-			if rule.Condition.Service == "" || rule.Condition.Action == "" {
+			
+			var hasService bool
+			switch svc := rule.Condition.Service.(type) {
+			case string:
+				hasService = svc != ""
+			case []interface{}, []string:
+				hasService = true  // Assume non-empty array 
+			default:
+				hasService = false
+			}
+			
+			if !hasService || rule.Condition.Action == "" {
 				return fmt.Errorf("rule %s of type %s requires both service and action conditions", rule.Name, rule.Type)
 			}
 		case models.UserAccessKey:

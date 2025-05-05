@@ -12,13 +12,56 @@ type PolicyDocument struct {
 	Statement []Statement `json:"Statement"`
 }
 
-
 type Statement struct {
 	Effect    string      `json:"Effect"`
 	Action    interface{} `json:"Action"`
 	Resource  interface{} `json:"Resource"`
 	Principal interface{} `json:"Principal,omitempty"`
 	Condition interface{} `json:"Condition,omitempty"`
+}
+
+// Define prefixes for read-only actions
+var readOnlyPrefixes = []string{
+	"Get", "List", "Describe", "View", "Read", "Check", "Retrieve", "Monitor",
+}
+
+// Check if an action is read-only based on its prefix
+func isReadOnlyAction(action string) bool {
+	parts := strings.Split(action, ":")
+	if len(parts) != 2 {
+		return false
+	}
+	
+	actionName := parts[1]
+	
+	for _, prefix := range readOnlyPrefixes {
+		if strings.HasPrefix(actionName, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// Helper function to get a clean policy display name
+func getDisplayPolicyName(policyName string) string {
+    // If it's an ARN, extract just the name part
+    if strings.HasPrefix(policyName, "arn:aws:iam::") {
+        parts := strings.Split(policyName, "/")
+        if len(parts) > 1 {
+            return parts[len(parts)-1]
+        }
+    }
+    return policyName
+}
+
+// Helper function to check for wildcard in resources
+func checkForWildcardResource(resources []string) bool {
+	for _, resource := range resources {
+		if resource == "*" || strings.Contains(resource, "*") {
+			return true
+		}
+	}
+	return false
 }
 
 func AnalyzeInlinePolicyDocument(policyName, policyDocument string, serviceToCheck, actionToCheck string) (bool, string) {
@@ -35,14 +78,18 @@ func AnalyzeInlinePolicyDocument(policyName, policyDocument string, serviceToChe
 		return false, fmt.Sprintf("Failed to parse policy document: %v", err)
 	}
 
-	return analyzeStatements(doc.Statement, serviceToCheck, actionToCheck)
+	// Pass the policy name to analyzeStatements
+	return analyzeStatements(doc.Statement, serviceToCheck, actionToCheck, policyName)
 }
 
-func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck string) (bool, string) {
+func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck string, policyName string) (bool, string) {
 	if EnableDiagnostics {
-		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Analyzing %d statements for service:%s action:%s\n", 
-			len(statements), serviceToCheck, actionToCheck)
+		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Analyzing %d statements for service:%s action:%s in policy: %s\n", 
+			len(statements), serviceToCheck, actionToCheck, policyName)
 	}
+
+	// Use a clean display name for the policy
+	displayPolicyName := getDisplayPolicyName(policyName)
 
 	// Checking for example. "s3:*"
 	exactMatchToFind := serviceToCheck + ":" + actionToCheck
@@ -99,69 +146,99 @@ func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck str
 			fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Statement %d has %d resources\n", i, len(resources))
 		}
 
-		exactMatch := false
-		
+		// Check for exact wildcard match first
+		exactWildcardMatch := false
 		for _, action := range actions {
 			if action == exactMatchToFind {
-				exactMatch = true
+				exactWildcardMatch = true
 				if EnableDiagnostics {
-					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found exact match for %s\n", exactMatchToFind)
+					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found exact wildcard match for %s\n", exactMatchToFind)
 				}
 				break
 			}
 		}
 		
-		// check if actionToCheck is a wildcard "*"
-		if !exactMatch && actionToCheck == "*" {
+		// If we have exact wildcard match
+		if exactWildcardMatch {
+			hasWildcardResource := checkForWildcardResource(resources)
+			
+			details := fmt.Sprintf("Policy '%s' contains exact wildcard match for %s", 
+				displayPolicyName, exactMatchToFind)
+			if hasWildcardResource {
+				details += " on resources with wildcard"
+			}
+			
+			if EnableDiagnostics {
+				fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Exact wildcard violation found: %s\n", details)
+			}
+			
+			return true, details
+		}
+		
+		// If no exact wildcard match, check for accumulative permissions
+		if actionToCheck == "*" {
 			serviceMatches := 0
+			nonReadOnlyCount := 0
+			var nonReadOnlyActions []string
+			
 			for _, action := range actions {
 				if strings.HasPrefix(action, serviceToCheck + ":") {
 					serviceMatches++
 					if EnableDiagnostics {
 						fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found service action: %s\n", action)
 					}
-				}
-			}
-			
-			// TO IMPROVE: IF serviceMatches > 10, consider as wildcard
-			// remark from artur if number is called it like 10 and the,,. != starting from LIST/GET/ (read only) do not consider 
-			if serviceMatches > 10 {
-				exactMatch = true
-				// dodaj tutaj logike zeby sprawdzacz tylko dla PUT/DELETE (nie read only things)  @patryk
-				if EnableDiagnostics {
-					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found %d actions for service %s, considering as equivalent to wildcard\n", 
-						serviceMatches, serviceToCheck)
-				}
-			}
-		}
-		
-		if exactMatch {
-			hasWildcardResource := false
-			for _, resource := range resources {
-				if resource == "*" || strings.Contains(resource, "*") {
-					hasWildcardResource = true
-					if EnableDiagnostics {
-						fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found wildcard in resource: %s\n", resource)
+					
+					// Check if this is a non-read-only action
+					if !isReadOnlyAction(action) {
+						nonReadOnlyCount++
+						nonReadOnlyActions = append(nonReadOnlyActions, action)
+						if EnableDiagnostics {
+							fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found non-read-only action: %s\n", action)
+						}
 					}
-					break
 				}
 			}
 			
-			details := fmt.Sprintf("Policy contains exact match for %s", exactMatchToFind)
-			if hasWildcardResource {
-				details += " on resources with wildcard"
+			// Only consider it a match if there are significant non-read-only actions
+			if serviceMatches > 10 && nonReadOnlyCount >= 3 {
+				hasWildcardResource := checkForWildcardResource(resources)
+				
+				// List up to 3 non-read-only actions in the details
+				nonReadOnlyExamples := ""
+				if len(nonReadOnlyActions) > 0 {
+					maxToShow := 3
+					if len(nonReadOnlyActions) < maxToShow {
+						maxToShow = len(nonReadOnlyActions)
+					}
+					nonReadOnlyExamples = strings.Join(nonReadOnlyActions[:maxToShow], ", ")
+					if len(nonReadOnlyActions) > maxToShow {
+						nonReadOnlyExamples += ", ..."
+					}
+				}
+				
+				details := fmt.Sprintf("Policy '%s' contains %d non-read-only actions for %s (e.g., %s)", 
+					displayPolicyName, nonReadOnlyCount, serviceToCheck, nonReadOnlyExamples)
+				
+				if hasWildcardResource {
+					details += " on resources with wildcard"
+				}
+				
+				if EnableDiagnostics {
+					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Accumulated permissions violation found: %s\n", details)
+				}
+				
+				return true, details
+			} else if serviceMatches > 0 {
+				if EnableDiagnostics {
+					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found %d actions for service %s (%d non-read-only), NOT enough to consider as wildcard\n", 
+						serviceMatches, serviceToCheck, nonReadOnlyCount)
+				}
 			}
-			
-			if EnableDiagnostics {
-				fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Violation found: %s\n", details)
-			}
-			
-			return true, details
 		}
 	}
 
 	if EnableDiagnostics {
-		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] No exact match found for %s:%s\n", 
+		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] No match found for %s:%s or insufficient non-read-only actions\n", 
 			serviceToCheck, actionToCheck)
 	}
 	
