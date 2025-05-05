@@ -290,7 +290,8 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 			continue
 		}
 
-		if policy.Type == "Inline" && policy.Document != "" {
+		// if policy.Type == "Inline" && policy.Document != "" {
+			if policy.Document != "" {
 			logDiagnostic("Analyzing inline policy document for role %s, policy %s", 
 				role.RoleName, policy.Name)
 			
@@ -393,7 +394,8 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 			continue
 		}
 
-		if policy.Type == "Inline" && policy.Document != "" {
+		// if policy.Type == "Inline" && policy.Document != "" {
+		if policy.Document != "" {
 			logDiagnostic("Analyzing inline policy document for user %s, policy %s", 
 				user.UserName, policy.Name)
 			

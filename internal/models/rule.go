@@ -6,7 +6,7 @@ type Severity string
 type RuleType string
 
 const (
-
+	
 	Critical Severity = "CRITICAL"
 	High     Severity = "HIGH"
 	Medium   Severity = "MEDIUM"
@@ -44,6 +44,8 @@ type Condition struct {
 type RuleSet struct {
 	Rules []Rule `yaml:"rules"`
 }
+
+// Add confidence value -> bool
 
 type Violation struct {
 	RuleName    string   `json:"rule_name"`

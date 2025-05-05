@@ -8,19 +8,15 @@ import (
 	"os"
 	"strings"
 
-	"escalato/internal/models"
-
 	"github.com/aws/aws-sdk-go-v2/service/iam"
+	"escalato/internal/models"
 )
 
 var (
-	// EnableDiagnostics włącza komunikaty diagnostyczne
 	EnableDiagnostics = false
 )
 
 
-
-// logDiagnostic wyświetla komunikat diagnostyczny
 func logDiagnostic(format string, args ...interface{}) {
 	if EnableDiagnostics {
 		fmt.Fprintf(os.Stderr, "[DIAG] "+format+"\n", args...)
@@ -85,7 +81,7 @@ func GetIAMUsers(ctx context.Context, svc *iam.Client,
 				if err == nil {
 					logDiagnostic("User %s has %d inline policies", *u.UserName, len(policiesOutput.PolicyNames))
 					for _, policyName := range policiesOutput.PolicyNames {
-						// Pobierz dokument polityki inline
+						// download  inline policies
 						logDiagnostic("Fetching policy document for %s", policyName)
 						policyOutput, err := svc.GetUserPolicy(ctx, &iam.GetUserPolicyInput{
 							UserName:   u.UserName,
@@ -98,7 +94,6 @@ func GetIAMUsers(ctx context.Context, svc *iam.Client,
 						}
 						
 						if err == nil && policyOutput.PolicyDocument != nil {
-							// Dekoduj dokument polityki
 							decodedPolicy, err := decodePolicy(*policyOutput.PolicyDocument)
 							if err == nil {
 								policy.Document = decodedPolicy
@@ -361,17 +356,116 @@ func GetIAMRoles(ctx context.Context, svc *iam.Client,
 	return roles, nil
 }
 
+func (c *Client) GetManagedPolicyDocument(ctx context.Context, policyArn string) (string, error) {
+    // Sprawdź, czy mamy już tę politykę w pamięci podręcznej
+    if doc, ok := c.ManagedPoliciesCache[policyArn]; ok {
+        logDiagnostic("Retrieved policy document for %s from cache", policyArn)
+        return doc, nil
+    }
+
+    logDiagnostic("Fetching managed policy document for %s", policyArn)
+    
+    // Pobierz informacje o polityce
+    policyOutput, err := c.IAMClient.GetPolicy(ctx, &iam.GetPolicyInput{
+        PolicyArn: &policyArn,
+    })
+    
+    if err != nil {
+        logDiagnostic("Error getting policy %s: %v", policyArn, err)
+        return "", err
+    }
+    
+    if policyOutput.Policy == nil || policyOutput.Policy.DefaultVersionId == nil {
+        logDiagnostic("Policy or DefaultVersionId is nil for %s", policyArn)
+        return "", fmt.Errorf("policy or default version ID is nil")
+    }
+    
+    // Pobierz wersję polityki zawierającą dokument
+    versionOutput, err := c.IAMClient.GetPolicyVersion(ctx, &iam.GetPolicyVersionInput{
+        PolicyArn: &policyArn,
+        VersionId: policyOutput.Policy.DefaultVersionId,
+    })
+    
+    if err != nil {
+        logDiagnostic("Error getting policy version for %s: %v", policyArn, err)
+        return "", err
+    }
+    
+    if versionOutput.PolicyVersion == nil || versionOutput.PolicyVersion.Document == nil {
+        logDiagnostic("PolicyVersion or Document is nil for %s", policyArn)
+        return "", fmt.Errorf("policy version or document is nil")
+    }
+    
+    // Odkoduj dokument polityki (jest zakodowany URL)
+    document, err := decodePolicy(*versionOutput.PolicyVersion.Document)
+    if err != nil {
+        logDiagnostic("Error decoding policy document for %s: %v", policyArn, err)
+        return "", err
+    }
+    
+    logDiagnostic("Successfully fetched policy document for %s (length: %d)", 
+        policyArn, len(document))
+    
+    // Zapisz w pamięci podręcznej
+    c.ManagedPoliciesCache[policyArn] = document
+    
+    return document, nil
+}
+
+func (c *Client) UpdateRolePoliciesWithDocuments(ctx context.Context, role *models.Role) error {
+    for i, policy := range role.Policies {
+        // Jeśli to polityka zarządzana i nie ma jeszcze dokumentu, pobierz go
+        if policy.Type == "Managed" && policy.Document == "" && policy.Arn != "" {
+            logDiagnostic("Fetching document for managed policy %s (ARN: %s) for role %s", 
+                policy.Name, policy.Arn, role.RoleName)
+            
+            document, err := c.GetManagedPolicyDocument(ctx, policy.Arn)
+            if err != nil {
+                logDiagnostic("Failed to fetch managed policy document for %s: %v", policy.Arn, err)
+                continue
+            }
+            
+            // Zaktualizuj dokument polityki
+            role.Policies[i].Document = document
+            logDiagnostic("Updated managed policy document for %s", policy.Name)
+        }
+    }
+    
+    return nil
+}
+
+
+func (c *Client) UpdateUserPoliciesWithDocuments(ctx context.Context, user *models.User) error {
+    for i, policy := range user.Policies {
+        // Jeśli to polityka zarządzana i nie ma jeszcze dokumentu, pobierz go
+        if policy.Type == "Managed" && policy.Document == "" && policy.Arn != "" {
+            logDiagnostic("Fetching document for managed policy %s (ARN: %s) for user %s", 
+                policy.Name, policy.Arn, user.UserName)
+            
+            document, err := c.GetManagedPolicyDocument(ctx, policy.Arn)
+            if err != nil {
+                logDiagnostic("Failed to fetch managed policy document for %s: %v", policy.Arn, err)
+                continue
+            }
+            
+            // Zaktualizuj dokument polityki
+            user.Policies[i].Document = document
+            logDiagnostic("Updated managed policy document for %s", policy.Name)
+        }
+    }
+    
+    return nil
+}
+
 func decodePolicy(policyDocument string) (string, error) {
 	logDiagnostic("Attempting to decode policy document of length %d", len(policyDocument))
 	
-	// Sprawdź, czy dokument wymaga dekodowania URL
 	needsUrlDecoding := strings.Contains(policyDocument, "%")
 	
 	if needsUrlDecoding {
 		logDiagnostic("Policy document appears to be URL-encoded, attempting to unescape")
 	}
 	
-	// Najpierw odkoduj znaki URL-encoded jeśli to konieczne
 	docToUse := policyDocument
 	if needsUrlDecoding {
 		unescaped, err := url.QueryUnescape(policyDocument)
@@ -387,12 +481,12 @@ func decodePolicy(policyDocument string) (string, error) {
 	
 	if err := json.Unmarshal([]byte(docToUse), &policy); err != nil {
 		logDiagnostic("Error parsing JSON policy document: %v", err)
-		// Jeśli nadal nie udało się odkodować, spróbuj usunąć cudzysłowy
+	
 		if strings.HasPrefix(docToUse, "\"") && strings.HasSuffix(docToUse, "\"") {
 			logDiagnostic("Policy document is wrapped in quotes, attempting to unwrap")
 			unwrapped := docToUse[1:len(docToUse)-1]
 			
-			// Może być potrzebne ponowne odkodowanie znaków escape w JSON
+	
 			unwrapped = strings.ReplaceAll(unwrapped, "\\\"", "\"")
 			unwrapped = strings.ReplaceAll(unwrapped, "\\\\", "\\")
 			
@@ -416,3 +510,4 @@ func decodePolicy(policyDocument string) (string, error) {
 	
 	return string(pretty), nil
 }
+

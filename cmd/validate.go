@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/spf13/cobra"
 	"escalato/internal/aws"
 	"escalato/internal/rules"
 	"escalato/internal/validator"
+
+	"github.com/spf13/cobra"
 )
 
 var (
-	rulesFile      string
-	outputJson     string
+	rulesFile         string
+	outputJson        string
 	enableDiagnostics bool
 )
 
@@ -26,7 +27,7 @@ var validateCmd = &cobra.Command{
 		profile, _ := cmd.Flags().GetString("profile")
 		region, _ := cmd.Flags().GetString("region")
 
-		// Włącz diagnostykę jeśli wybrano
+		// Enable diagnostics
 		if enableDiagnostics {
 			aws.EnableDiagnostics = true
 			validator.EnableDiagnostics = true
@@ -63,6 +64,22 @@ var validateCmd = &cobra.Command{
 
 		fmt.Printf("Retrieved %d roles and %d users\n", len(roles), len(users))
 
+		fmt.Println("Fetching managed policy documents...")
+
+		for i := range roles {
+			if err := client.UpdateRolePoliciesWithDocuments(context.Background(), &roles[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error fetching managed policies for role %s: %v\n",
+					roles[i].RoleName, err)
+			}
+		}
+
+		for i := range users {
+			if err := client.UpdateUserPoliciesWithDocuments(context.Background(), &users[i]); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: Error fetching managed policies for user %s: %v\n",
+					users[i].UserName, err)
+			}
+		}
+
 		// Run validation
 		fmt.Println("Running validation...")
 		validationResults, err := validator.ValidateAll(ruleSet, roles, users)
@@ -73,7 +90,7 @@ var validateCmd = &cobra.Command{
 		// Display results in console
 		validator.DisplayResults(validationResults)
 
-		// Export to JSON if requested
+		// Export to JSON
 		if outputJson != "" {
 			fmt.Printf("Exporting results to %s...\n", outputJson)
 			err := exportToJson(validationResults, outputJson)
@@ -96,7 +113,7 @@ func exportToJson(results *validator.ValidationResults, outputPath string) error
 
 func init() {
 	rootCmd.AddCommand(validateCmd)
-	
+
 	validateCmd.Flags().StringVar(&rulesFile, "rules", "escalato-rules.yml", "Path to the YAML file with validation rules")
 	validateCmd.Flags().StringVar(&outputJson, "output-json", "", "Export results to JSON file")
 	validateCmd.Flags().BoolVar(&enableDiagnostics, "diagnostics", false, "Enable diagnostic output for debugging")
