@@ -68,3 +68,4 @@ func validateRules(rules []models.Rule) error {
 	}
 
 	return nil
+}
