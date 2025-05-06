@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	
+	"escalato/internal/models"
 )
 
 type PolicyDocument struct {
@@ -64,7 +66,7 @@ func checkForWildcardResource(resources []string) bool {
 	return false
 }
 
-func AnalyzeInlinePolicyDocument(policyName, policyDocument string, serviceToCheck, actionToCheck string) (bool, string) {
+func AnalyzeInlinePolicyDocument(policyName, policyDocument string, serviceToCheck, actionToCheck string) (bool, string, models.Confidence) {
 	if EnableDiagnostics {
 		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Analyzing policy document: %s\n", policyName)
 	}
@@ -75,14 +77,14 @@ func AnalyzeInlinePolicyDocument(policyName, policyDocument string, serviceToChe
 		if EnableDiagnostics {
 			fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Failed to parse policy document %s: %v\n", policyName, err)
 		}
-		return false, fmt.Sprintf("Failed to parse policy document: %v", err)
+		return false, fmt.Sprintf("Failed to parse policy document: %v", err), models.LowConfidence
 	}
 
 	// Pass the policy name to analyzeStatements
 	return analyzeStatements(doc.Statement, serviceToCheck, actionToCheck, policyName)
 }
 
-func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck string, policyName string) (bool, string) {
+func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck string, policyName string) (bool, string, models.Confidence) {
 	if EnableDiagnostics {
 		fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Analyzing %d statements for service:%s action:%s in policy: %s\n", 
 			len(statements), serviceToCheck, actionToCheck, policyName)
@@ -172,7 +174,13 @@ func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck str
 				fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Exact wildcard violation found: %s\n", details)
 			}
 			
-			return true, details
+			// Determine confidence level
+			confidence := models.MediumConfidence
+			if hasWildcardResource {
+				confidence = models.HighConfidence // Highest confidence for exact match with wildcards
+			}
+			
+			return true, details, confidence
 		}
 		
 		// If no exact wildcard match, check for accumulative permissions
@@ -227,7 +235,16 @@ func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck str
 					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Accumulated permissions violation found: %s\n", details)
 				}
 				
-				return true, details
+				// Determine confidence level
+				confidence := models.LowConfidence
+				if nonReadOnlyCount > 5 {
+					confidence = models.MediumConfidence
+				}
+				if hasWildcardResource && nonReadOnlyCount > 8 {
+					confidence = models.HighConfidence
+				}
+				
+				return true, details, confidence
 			} else if serviceMatches > 0 {
 				if EnableDiagnostics {
 					fmt.Fprintf(os.Stderr, "[DIAG-ANALYZER] Found %d actions for service %s (%d non-read-only), NOT enough to consider as wildcard\n", 
@@ -242,5 +259,5 @@ func analyzeStatements(statements []Statement, serviceToCheck, actionToCheck str
 			serviceToCheck, actionToCheck)
 	}
 	
-	return false, ""
+	return false, "", models.LowConfidence
 }
