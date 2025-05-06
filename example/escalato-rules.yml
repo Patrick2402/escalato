@@ -126,7 +126,7 @@ rules:
     # LOW - When trusted entity is restricted with conditions
 
 
-  - name: "Secret Manager List Access"
+  - name: "Secret Manager GetSecret Value"
     description: "Role has access to list secrets in AWS Secrets Manager"
     severity: HIGH
     type: ROLE_PERMISSIONS
