@@ -34,6 +34,12 @@ type ValidationSummary struct {
 	MediumViolations   int `json:"medium_violations"`
 	LowViolations      int `json:"low_violations"`
 	InfoViolations     int `json:"info_violations"`
+	
+	// Add confidence summary counts
+	HighConfidenceViolations   int `json:"high_confidence_violations"`
+	MediumConfidenceViolations int `json:"medium_confidence_violations"`
+	LowConfidenceViolations    int `json:"low_confidence_violations"`
+	InfoConfidenceViolations   int `json:"info_confidence_violations"`
 }
 
 // Helper function to extract services from the condition
@@ -74,6 +80,52 @@ func isAWSManagedServiceRole(role models.Role) bool {
 	return false
 }
 
+// Helper function to calculate confidence for trust policies
+func calculateTrustPolicyConfidence(hasWildcardPrincipal bool, hasConditions bool, action string) models.Confidence {
+	if hasWildcardPrincipal && !hasConditions && action == "AssumeRole" {
+		return models.HighConfidence // Highest risk - wildcard can assume role without conditions
+	} else if hasWildcardPrincipal && hasConditions {
+		return models.MediumConfidence // Wildcard but with some conditions as mitigations
+	} else if !hasWildcardPrincipal && !hasConditions && action == "AssumeRole" {
+		return models.MediumConfidence // Specific principal but without conditions
+	}
+	return models.LowConfidence // Default - other patterns
+}
+
+// Helper function to calculate confidence for user access keys
+func calculateAccessKeyConfidence(keyAge int, thresholdAge int, status string) models.Confidence {
+	if status == "Inactive" {
+		return models.HighConfidence // Very confident this is an issue if explicitly checking inactive keys
+	}
+	
+	if keyAge > 0 && thresholdAge > 0 {
+		multiplier := float64(keyAge) / float64(thresholdAge)
+		if multiplier > 2.0 {
+			return models.HighConfidence // Key much older than threshold (over 2x)
+		} else if multiplier > 1.2 {
+			return models.MediumConfidence // Key moderately older than threshold (1.2-2x)
+		}
+	}
+	
+	return models.LowConfidence // Default
+}
+
+// Helper function to calculate confidence for name-based policy analysis
+func calculateNameBasedConfidence(policyName string, serviceToCheck string, actionToCheck string) models.Confidence {
+	nameContainsService := strings.Contains(strings.ToLower(policyName), strings.ToLower(serviceToCheck))
+	nameContainsAction := actionToCheck == "*" || strings.Contains(policyName, actionToCheck)
+	nameContainsFullAccess := strings.Contains(strings.ToLower(policyName), "fullaccess") || 
+							strings.Contains(strings.ToLower(policyName), "administratoraccess")
+	
+	if nameContainsFullAccess && nameContainsService {
+		return models.HighConfidence // Clear indication of full access
+	} else if nameContainsService && nameContainsAction {
+		return models.MediumConfidence // Specific matches in name
+	}
+	
+	return models.LowConfidence // Default - more ambiguous matches
+}
+
 func ValidateAll(rules *models.RuleSet, roles []models.Role, users []models.User) (*ValidationResults, error) {
 	logDiagnostic("Starting validation with %d rules for %d roles and %d users", 
 		len(rules.Rules), len(roles), len(users))
@@ -97,6 +149,7 @@ func ValidateAll(rules *models.RuleSet, roles []models.Role, users []models.User
 
 	results.Summary.TotalViolations = len(results.Violations)
 	
+	// Count violations by severity and confidence
 	for _, violation := range results.Violations {
 		switch violation.Severity {
 		case models.Critical:
@@ -110,6 +163,18 @@ func ValidateAll(rules *models.RuleSet, roles []models.Role, users []models.User
 		case models.Info:
 			results.Summary.InfoViolations++
 		}
+		
+		// Count by confidence level
+		switch violation.Confidence {
+		case models.HighConfidence:
+			results.Summary.HighConfidenceViolations++
+		case models.MediumConfidence:
+			results.Summary.MediumConfidenceViolations++
+		case models.LowConfidence:
+			results.Summary.LowConfidenceViolations++
+		case models.InfoConfidence:
+			results.Summary.InfoConfidenceViolations++
+		}
 	}
 
 	logDiagnostic("Validation complete. Found %d violations (Critical: %d, High: %d, Medium: %d, Low: %d, Info: %d)",
@@ -119,12 +184,18 @@ func ValidateAll(rules *models.RuleSet, roles []models.Role, users []models.User
 		results.Summary.MediumViolations,
 		results.Summary.LowViolations,
 		results.Summary.InfoViolations)
+		
+	logDiagnostic("Confidence levels: High: %d, Medium: %d, Low: %d, Info: %d",
+		results.Summary.HighConfidenceViolations,
+		results.Summary.MediumConfidenceViolations,
+		results.Summary.LowConfidenceViolations,
+		results.Summary.InfoConfidenceViolations)
 
 	return results, nil
 }
 
 func validateRole(rules *models.RuleSet, role models.Role, results *ValidationResults) {
-	// Skip AWS managed service roles
+	// Skip AWS managed service roles 
 	if isAWSManagedServiceRole(role) {
 		logDiagnostic("Skipping AWS managed service role: %s", role.RoleName)
 		return
@@ -188,18 +259,20 @@ func validateRoleTrustPolicy(rule models.Rule, role models.Role, results *Valida
 				continue
 			}
 
-			// Sprawdź Effect - interesują nas tylko Allow
+			// Check Effect - we care only about Allow
 			effect, ok := stmt["Effect"].(string)
 			if !ok || effect != "Allow" {
 				logDiagnostic("Statement %d does not have Effect=Allow, skipping", stmtIndex)
 				continue
 			}
 			
-			// Sprawdź Action - czy pasuje do tego, czego szukamy
+			// Check Action - does it match what we're looking for
 			matchesAction := false
+			actionValue := ""
 			if actions, ok := stmt["Action"].(string); ok {
 				logDiagnostic("Action in statement: %s", actions)
 				logDiagnostic("Action in rule: %s", rule.Condition.Action)
+				actionValue = actions
 				if actions == rule.Condition.Action || rule.Condition.Action == "*" {
 					matchesAction = true
 					logDiagnostic("Found matching action in trust policy: %s", actions)
@@ -209,6 +282,7 @@ func validateRoleTrustPolicy(rule models.Rule, role models.Role, results *Valida
 				for _, a := range actionArray {
 					if action, ok := a.(string); ok {
 						logDiagnostic("Checking action: %s", action)
+						actionValue = action
 						if action == rule.Condition.Action || rule.Condition.Action == "*" {
 							matchesAction = true
 							logDiagnostic("Found matching action in trust policy: %s", action)
@@ -218,10 +292,9 @@ func validateRoleTrustPolicy(rule models.Rule, role models.Role, results *Valida
 				}
 			}
 			
-			// Specjalna logika dla Cross Account Access (aws_principal)
+			// Special logic for Cross Account Access (aws_principal)
 			if rule.Condition.AWSPrincipal {
-				// Sprawdzamy czy Principal zawiera AWS
-				// hasCrossAccountAccess := false
+				// Check if Principal contains AWS
 				var principalAccounts []string
 				
 				if principal, ok := stmt["Principal"].(map[string]interface{}); ok {
@@ -229,11 +302,11 @@ func validateRoleTrustPolicy(rule models.Rule, role models.Role, results *Valida
 					if aws, ok := principal["AWS"]; ok {
 						logDiagnostic("AWS principal found: %v", aws)
 						if awsStr, ok := aws.(string); ok {
-							// Znaleziono Principal.AWS jako string
+							// Found Principal.AWS as string
 							principalAccounts = append(principalAccounts, awsStr)
 							logDiagnostic("Found AWS principal: %s", awsStr)
 						} else if awsArray, ok := aws.([]interface{}); ok {
-							// Znaleziono Principal.AWS jako tablicę
+							// Found Principal.AWS as array
 							for _, a := range awsArray {
 								if awsItem, ok := a.(string); ok {
 									principalAccounts = append(principalAccounts, awsItem)
@@ -244,55 +317,61 @@ func validateRoleTrustPolicy(rule models.Rule, role models.Role, results *Valida
 					}
 				}
 				
-				// Sprawdź czy istnieje principal, który nie jest na liście wykluczeń
-	// In the section for the aws_principal check:
-if len(principalAccounts) > 0 && matchesAction {
-    hasCrossAccountAccess := false  // Change this to a regular variable without := 
-    
-    for _, account := range principalAccounts {
-        principalExcluded := false
-        
-        // Sprawdź czy principal jest na liście wykluczeń
-        for _, excludePattern := range rule.Condition.ExcludePrincipals {
-            if strings.Contains(account, excludePattern) {
-                principalExcluded = true
-                logDiagnostic("Principal %s is excluded by pattern %s", account, excludePattern)
-                break
-            }
-        }
-        
-        if !principalExcluded {
-            hasCrossAccountAccess = true  // Now we use the variable
-            
-            details := fmt.Sprintf("Role trust policy allows cross-account access from %s", account)
-            
-            logDiagnostic("Cross Account violation found for role %s: %s", role.RoleName, details)
-            
-            results.Violations = append(results.Violations, models.Violation{
-                RuleName:     rule.Name,
-                Description:  rule.Description,
-                Severity:     rule.Severity,
-                ResourceName: role.RoleName,
-                ResourceType: "Role",
-                ResourceARN:  role.Arn,
-                Details:      details,
-            })
-            
-            return
-        }
-    }
-    
-    // If we reach here and still haven't found a violation, we can check hasCrossAccountAccess
-    if !hasCrossAccountAccess {
-        logDiagnostic("No cross-account access violations found for role %s", role.RoleName)
-    }
-}
+				// Check if there's a principal not in exclusion list 
+				if len(principalAccounts) > 0 && matchesAction {
+					hasCrossAccountAccess := false
+					
+					for _, account := range principalAccounts {
+						principalExcluded := false
+						
+						// Check if principal is in exclusion list
+						for _, excludePattern := range rule.Condition.ExcludePrincipals {
+							if strings.Contains(account, excludePattern) {
+								principalExcluded = true
+								logDiagnostic("Principal %s is excluded by pattern %s", account, excludePattern)
+								break
+							}
+						}
+						
+						if !principalExcluded {
+							hasCrossAccountAccess = true
+							
+							details := fmt.Sprintf("Role trust policy allows cross-account access from %s", account)
+							
+							// Determine confidence level
+							confidence := models.MediumConfidence // Default for cross-account
+							if strings.Contains(account, "*") {
+								confidence = models.HighConfidence // Higher risk if wildcard in account
+							}
+							
+							logDiagnostic("Cross Account violation found for role %s: %s", role.RoleName, details)
+							
+							results.Violations = append(results.Violations, models.Violation{
+								RuleName:     rule.Name,
+								Description:  rule.Description,
+								Severity:     rule.Severity,
+								Confidence:   confidence,
+								ResourceName: role.RoleName,
+								ResourceType: "Role",
+								ResourceARN:  role.Arn,
+								Details:      details,
+							})
+							
+							return
+						}
+					}
+					
+					// If we reach here and still haven't found a violation, we can check hasCrossAccountAccess
+					if !hasCrossAccountAccess {
+						logDiagnostic("No cross-account access violations found for role %s", role.RoleName)
+					}
+				}
 				
-				// Jeśli dotarliśmy tutaj, to nie znaleźliśmy naruszenia dla aws_principal
+				// If we made it here, there's no violation for aws_principal
 				continue
 			}
 
-			// Znajdź usługi w Principal.Service
+			// Find services in Principal.Service
 			var principalServices []string
 			if principal, ok := stmt["Principal"].(map[string]interface{}); ok {
 				logDiagnostic("Principal found in statement: %v", principal)
@@ -313,7 +392,7 @@ if len(principalAccounts) > 0 && matchesAction {
 				}
 			}
 
-			// Sprawdź, czy którykolwiek z principalServices jest na liście wykluczeń
+			// Check if any principalServices are in exclusion list
 			principalExcluded := false
 			if len(rule.Condition.ExcludePrincipals) > 0 && len(principalServices) > 0 {
 				logDiagnostic("Checking if principals are excluded: %v", principalServices)
@@ -336,7 +415,7 @@ if len(principalAccounts) > 0 && matchesAction {
 				continue
 			}
 
-			// Sprawdź, czy istnieje sekcja Condition i czy nie jest pusta
+			// Check if there's a Condition section and it's not empty
 			hasConditions := false
 			if conditionObj, ok := stmt["Condition"]; ok && conditionObj != nil {
 				logDiagnostic("Condition found in statement: %v", conditionObj)
@@ -350,7 +429,7 @@ if len(principalAccounts) > 0 && matchesAction {
 				logDiagnostic("No Condition found in statement")
 			}
 
-			// Sprawdzanie wildcard w Principal
+			// Check for wildcard in Principal
 			hasWildcardPrincipal := false
 			for _, svc := range principalServices {
 				if strings.Contains(svc, "*") {
@@ -360,14 +439,14 @@ if len(principalAccounts) > 0 && matchesAction {
 				}
 			}
 			
-			// Sprawdź, czy matchesService dla standardowej metody pasowania
+			// Check if matchesService for standard matching method
 			matchesService := false
 			if len(services) == 0 {
-				// Jeśli nie określono usług w regule, to każda usługa pasuje
+				// If services not specified in rule, any service matches
 				matchesService = true
 				logDiagnostic("No services specified in rule, any service matches")
 			} else {
-				// Sprawdź, czy którakolwiek z usług w Principal.Service pasuje do usług w regule
+				// Check if any service in Principal.Service matches services in rule
 				for _, svc := range principalServices {
 					for _, ruleService := range services {
 						if strings.Contains(svc, ruleService) {
@@ -382,22 +461,27 @@ if len(principalAccounts) > 0 && matchesAction {
 				}
 			}
 
-			// Specjalne sprawdzenie dla require_conditions
+			// Special check for require_conditions
 			if rule.Condition.RequireConditions && rule.Condition.Action == "sts:AssumeRole" {
-				// Dla reguły require_conditions z AssumeRole, nie wymagamy matchesService
-				// Sprawdzamy tylko, czy brakuje warunków
+				// For require_conditions rule with AssumeRole, we don't require matchesService
+				// Just check if conditions are missing
 				
 				if matchesAction && !hasConditions {
-					// Jeśli brak warunków, a są wymagane, to jest to naruszenie
+					// If conditions missing but required, it's a violation
 					details := fmt.Sprintf("Role trust policy allows AssumeRole without required conditions for service %s", 
 						strings.Join(principalServices, ", "))
 					
-					logDiagnostic("Violation found for role %s: %s", role.RoleName, details)
+					// Calculate confidence level
+					confidence := calculateTrustPolicyConfidence(hasWildcardPrincipal, hasConditions, actionValue)
+					
+					logDiagnostic("Violation found for role %s: %s (Confidence: %s)", 
+						role.RoleName, details, confidence)
 					
 					results.Violations = append(results.Violations, models.Violation{
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: role.RoleName,
 						ResourceType: "Role",
 						ResourceARN:  role.Arn,
@@ -409,7 +493,7 @@ if len(principalAccounts) > 0 && matchesAction {
 					logDiagnostic("Statement has conditions or doesn't match action, not a violation for require_conditions rule")
 				}
 			} else {
-				// Standardowa logika dla innych typów reguł
+				// Standard logic for other rule types
 				if (matchesAction && matchesService) && 
 				   (!rule.Condition.PrincipalWildcard || hasWildcardPrincipal) {
 					
@@ -426,12 +510,17 @@ if len(principalAccounts) > 0 && matchesAction {
 						details += " with wildcard principal"
 					}
 					
-					logDiagnostic("Standard violation found for role %s: %s", role.RoleName, details)
+					// Calculate confidence based on trust policy characteristics
+					confidence := calculateTrustPolicyConfidence(hasWildcardPrincipal, hasConditions, actionValue)
+					
+					logDiagnostic("Standard violation found for role %s: %s (Confidence: %s)", 
+						role.RoleName, details, confidence)
 					
 					results.Violations = append(results.Violations, models.Violation{
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: role.RoleName,
 						ResourceType: "Role",
 						ResourceARN:  role.Arn,
@@ -455,10 +544,15 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 				logDiagnostic("Found managed policy match for role %s: %s", 
 					role.RoleName, policy.Name)
 				
+				// For managed policy matches, the confidence is typically high
+				// especially for well-known AWS managed policies
+				confidence := models.HighConfidence
+				
 				results.Violations = append(results.Violations, models.Violation{
 					RuleName:     rule.Name,
 					Description:  rule.Description,
 					Severity:     rule.Severity,
+					Confidence:   confidence,
 					ResourceName: role.RoleName,
 					ResourceType: "Role",
 					ResourceARN:  role.Arn,
@@ -503,7 +597,7 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 				logDiagnostic("Analyzing policy document for role %s, policy %s, service %s", 
 					role.RoleName, policy.Name, service)
 				
-				hasViolation, details := AnalyzeInlinePolicyDocument(
+				hasViolation, details, confidence := AnalyzeInlinePolicyDocument(
 					policy.Name, 
 					policy.Document, 
 					service,
@@ -511,8 +605,8 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 				)
 				
 				if hasViolation {
-					logDiagnostic("Violation found in policy document for role %s, policy %s, service %s: %s", 
-						role.RoleName, policy.Name, service, details)
+					logDiagnostic("Violation found in policy document for role %s, policy %s, service %s: %s (Confidence: %s)", 
+						role.RoleName, policy.Name, service, details, confidence)
 					
 					serviceDetails := fmt.Sprintf("Service: %s - %s", service, details)
 					
@@ -520,6 +614,7 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: role.RoleName,
 						ResourceType: "Role",
 						ResourceARN:  role.Arn,
@@ -548,10 +643,14 @@ func validateRolePermissions(rule models.Rule, role models.Role, results *Valida
 					details := fmt.Sprintf("Service: %s - Role has potentially risky policy '%s' (based on name)", 
 						service, policy.Name)
 					
+					// Calculate confidence for name-based analysis
+					confidence := calculateNameBasedConfidence(policy.Name, service, rule.Condition.Action)
+					
 					results.Violations = append(results.Violations, models.Violation{
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: role.RoleName,
 						ResourceType: "Role",
 						ResourceARN:  role.Arn,
@@ -572,10 +671,14 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 				logDiagnostic("Found managed policy match for user %s: %s", 
 					user.UserName, policy.Name)
 				
+				// High confidence for managed policy matches
+				confidence := models.HighConfidence
+				
 				results.Violations = append(results.Violations, models.Violation{
 					RuleName:     rule.Name,
 					Description:  rule.Description,
 					Severity:     rule.Severity,
+					Confidence:   confidence,
 					ResourceName: user.UserName,
 					ResourceType: "User",
 					ResourceARN:  user.Arn,
@@ -620,7 +723,7 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 				logDiagnostic("Analyzing policy document for user %s, policy %s, service %s", 
 					user.UserName, policy.Name, service)
 				
-				hasViolation, details := AnalyzeInlinePolicyDocument(
+				hasViolation, details, confidence := AnalyzeInlinePolicyDocument(
 					policy.Name, 
 					policy.Document, 
 					service,
@@ -628,8 +731,8 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 				)
 				
 				if hasViolation {
-					logDiagnostic("Violation found in policy document for user %s, policy %s, service %s: %s", 
-						user.UserName, policy.Name, service, details)
+					logDiagnostic("Violation found in policy document for user %s, policy %s, service %s: %s (Confidence: %s)", 
+						user.UserName, policy.Name, service, details, confidence)
 					
 					serviceDetails := fmt.Sprintf("Service: %s - %s", service, details)
 					
@@ -637,6 +740,7 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: user.UserName,
 						ResourceType: "User",
 						ResourceARN:  user.Arn,
@@ -665,10 +769,14 @@ func validateUserPermissions(rule models.Rule, user models.User, results *Valida
 					details := fmt.Sprintf("Service: %s - User has potentially risky policy '%s' (based on name)", 
 						service, policy.Name)
 					
+					// Calculate confidence for name-based analysis
+					confidence := calculateNameBasedConfidence(policy.Name, service, rule.Condition.Action)
+					
 					results.Violations = append(results.Violations, models.Violation{
 						RuleName:     rule.Name,
 						Description:  rule.Description,
 						Severity:     rule.Severity,
+						Confidence:   confidence,
 						ResourceName: user.UserName,
 						ResourceType: "User",
 						ResourceARN:  user.Arn,
@@ -707,10 +815,14 @@ func validateUserAccessKeys(rule models.Rule, user models.User, results *Validat
 			logDiagnostic("Violation: key %s for user %s exceeds age threshold", 
 				key.Id, user.UserName)
 			
+			// Calculate confidence based on how much the key exceeds the threshold
+			confidence := calculateAccessKeyConfidence(ageInDays, rule.Condition.KeyAge, key.Status)
+			
 			results.Violations = append(results.Violations, models.Violation{
 				RuleName:     rule.Name,
 				Description:  rule.Description,
 				Severity:     rule.Severity,
+				Confidence:   confidence,
 				ResourceName: user.UserName,
 				ResourceType: "User",
 				ResourceARN:  user.Arn,
@@ -718,14 +830,18 @@ func validateUserAccessKeys(rule models.Rule, user models.User, results *Validat
 					key.Id, ageInDays, rule.Condition.KeyAge),
 			})
 		} else {
-
+			// Key status violation
 			logDiagnostic("Violation: key %s for user %s has status %s", 
 				key.Id, user.UserName, key.Status)
+			
+			// Typically high confidence for status-based checks
+			confidence := models.HighConfidence
 			
 			results.Violations = append(results.Violations, models.Violation{
 				RuleName:     rule.Name,
 				Description:  rule.Description,
 				Severity:     rule.Severity,
+				Confidence:   confidence,
 				ResourceName: user.UserName,
 				ResourceType: "User",
 				ResourceARN:  user.Arn,

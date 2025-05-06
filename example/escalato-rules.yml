@@ -1,3 +1,9 @@
+# Escalato Security Rules
+# This file defines security rules for AWS IAM configurations
+# Each rule includes a name, description, severity level, and conditions to match.
+# The validation engine also calculates a confidence level (HIGH, MEDIUM, LOW) for each finding
+# based on the certainty of the detection.
+
 rules:
   - name: "Wildcard in AssumeRole Trust Policy"
     description: "Role has a trusted policy with sts:AssumeRole and wildcard principal"
@@ -7,6 +13,10 @@ rules:
       service: "sts"
       action: "AssumeRole"
       principal_wildcard: true
+    # Confidence levels:
+    # HIGH - When wildcard principal is present without conditions
+    # MEDIUM - When wildcard is present but with some conditions
+    # LOW - Edge cases or potential false positives
 
   - name: "AssumeRole Without Conditions"
     description: "Role has a trusted policy with sts:AssumeRole without conditions"
@@ -27,7 +37,10 @@ rules:
         - "firehose.amazonaws.com"
         - "eks.amazonaws.com"
         - "ecs-tasks.amazonaws.com"
-
+    # Confidence levels:
+    # HIGH - When principal is a user/account and conditions are absent
+    # MEDIUM - When principal is a service but conditions should be present
+    # LOW - When the role has minimal usage
 
   - name: "High Privilege Role"
     description: "Role or user has administrator access"
@@ -41,14 +54,10 @@ rules:
         - "ViewOnly"
         - "AWSServiceRole"
         - "aws-service-role/support.amazonaws.com/AWSServiceRoleForSupport"
-
-# Can we check if s3 bucket is public? 
-# SEC #2 RULE
-# Another rule... Checking Read... for all Principals --> Confidence Low, 
-#
-#
-# SAME scenario for all services... read access... confidence low -> severity choose
-
+    # Confidence levels:
+    # HIGH - When policy document contains exact match with wildcard resources
+    # MEDIUM - When multiple non-read-only actions are detected
+    # LOW - When detection is based on policy name patterns
 
   - name: "Outdated Access Key"
     description: "User has access key older than 180 days"
@@ -56,6 +65,10 @@ rules:
     type: USER_ACCESS_KEY
     condition:
       key_age: 180
+    # Confidence levels:
+    # HIGH - When key is much older than threshold (>2x)
+    # MEDIUM - When key moderately exceeds threshold (1.2-2x)
+    # LOW - When key just exceeds threshold
 
   - name: "Inactive Access Key"
     description: "User has inactive access key"
@@ -63,6 +76,10 @@ rules:
     type: USER_ACCESS_KEY
     condition:
       key_status: "Inactive"
+    # Confidence levels:
+    # HIGH - When key is explicitly marked as inactive
+    # MEDIUM - When key is found but not recently used
+    # LOW - When key status cannot be precisely determined
 
   - name: "Full Service Access"
     description: "Role or user has full access to critical services"
@@ -80,6 +97,10 @@ rules:
         - "AWSServiceRoleForTrustedAdvisor"
         - "AWSServiceRoleForSupport"
         - "AWSServiceRoleForAmazonMacie"
+    # Confidence levels:
+    # HIGH - When policy explicitly grants full access with * resources
+    # MEDIUM - When policy grants extensive non-read permissions
+    # LOW - When detection relies on name-based analysis
 
   - name: "Admin Policy Attached"
     description: "Role or user has the AdministratorAccess policy attached"
@@ -87,6 +108,8 @@ rules:
     type: ROLE_PERMISSIONS
     condition:
       managed_policy: "AdministratorAccess"
+    # Confidence levels:
+    # HIGH - Always high for managed policy detections, as these are definitive
 
   - name: "Cross Account Access" 
     description: "Role allows cross-account access"
@@ -97,3 +120,25 @@ rules:
       action: "sts:AssumeRole"
       exclude_principals:
         - "arn:aws:iam::aws:"
+    # Confidence levels:
+    # HIGH - When wildcard is used in Principal.AWS
+    # MEDIUM - When specific account IDs are used without conditions
+    # LOW - When trusted entity is restricted with conditions
+
+
+  - name: "Secret Manager GetSecret Value"
+    description: "Role has access to list secrets in AWS Secrets Manager"
+    severity: HIGH
+    type: ROLE_PERMISSIONS
+    condition:
+      service: ["secretsmanager"]
+      action: "GetSecretValue"
+      exclude_patterns:
+        - "ReadOnly"
+        - "ViewOnly"
+        - "AWSLambdaVPCAccessExecutionRole"
+        - "AWSLambdaBasicExecutionRole"
+        - "AWSLambdaS3ExecutionRole"
+        - "AWSServiceRoleForTrustedAdvisor"
+        - "AWSServiceRoleForSupport"
+        - "AWSServiceRoleForAmazonMacie"

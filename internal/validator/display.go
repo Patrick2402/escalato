@@ -35,6 +35,17 @@ func DisplayResults(results *ValidationResults) {
 	lowColor.Printf("LOW: %d violations\n", results.Summary.LowViolations)
 	infoColor.Printf("INFO: %d violations\n", results.Summary.InfoViolations)
 	fmt.Println()
+	
+	// Display confidence level summary
+	highConfColor := color.New(color.FgRed, color.Bold)
+	medConfColor := color.New(color.FgYellow)
+	lowConfColor := color.New(color.FgCyan)
+	
+	fmt.Println("Confidence Level Breakdown:")
+	highConfColor.Printf("HIGH CONFIDENCE: %d violations\n", results.Summary.HighConfidenceViolations)
+	medConfColor.Printf("MEDIUM CONFIDENCE: %d violations\n", results.Summary.MediumConfidenceViolations)
+	lowConfColor.Printf("LOW CONFIDENCE: %d violations\n", results.Summary.LowConfidenceViolations)
+	fmt.Println()
 
 	if results.Summary.TotalViolations == 0 {
 		color.Green("✅ No violations found. All resources comply with the defined rules.")
@@ -61,9 +72,33 @@ func displayViolationsByLevel(violations []models.Violation, level models.Severi
 		colorizer.Printf("%d. %s\n", i+1, violation.RuleName)
 		fmt.Printf("   Resource: %s (%s)\n", violation.ResourceName, violation.ResourceType)
 		fmt.Printf("   ARN: %s\n", violation.ResourceARN)
+		
+		// Display confidence with appropriate color
+		displayConfidence(violation.Confidence)
+		
 		fmt.Printf("   Details: %s\n", violation.Details)
 		fmt.Println()
 	}
+}
+
+// Helper function to display confidence with color
+func displayConfidence(confidence models.Confidence) {
+	var confColor *color.Color
+	
+	switch confidence {
+	case models.HighConfidence:
+		confColor = color.New(color.FgRed, color.Bold)
+	case models.MediumConfidence:
+		confColor = color.New(color.FgYellow)
+	case models.LowConfidence:
+		confColor = color.New(color.FgCyan)
+	case models.InfoConfidence:
+		confColor = color.New(color.FgBlue)
+	default:
+		confColor = color.New(color.FgWhite)
+	}
+	
+	confColor.Printf("   Confidence: %s\n", confidence)
 }
 
 func filterViolationsByLevel(violations []models.Violation, level models.Severity) []models.Violation {
