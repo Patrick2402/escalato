@@ -111,17 +111,6 @@ func filterViolationsByLevel(violations []models.Violation, level models.Severit
 	return filtered
 }
 
-// Filter violations by confidence level
-func filterViolationsByConfidence(violations []models.Violation, confidence models.Confidence) []models.Violation {
-	var filtered []models.Violation
-	for _, v := range violations {
-		if v.Confidence == confidence {
-			filtered = append(filtered, v)
-		}
-	}
-	return filtered
-}
-
 func TruncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s

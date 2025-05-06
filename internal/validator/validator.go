@@ -195,7 +195,7 @@ func ValidateAll(rules *models.RuleSet, roles []models.Role, users []models.User
 }
 
 func validateRole(rules *models.RuleSet, role models.Role, results *ValidationResults) {
-	// Skip AWS managed service roles
+	// Skip AWS managed service roles 
 	if isAWSManagedServiceRole(role) {
 		logDiagnostic("Skipping AWS managed service role: %s", role.RoleName)
 		return

@@ -126,9 +126,19 @@ rules:
     # LOW - When trusted entity is restricted with conditions
 
 
-  - name: "Lambda Policy Injection"
-    description: "Identity can both create Lambda functions and assign role policies"
+  - name: "Secret Manager List Access"
+    description: "Role has access to list secrets in AWS Secrets Manager"
     severity: HIGH
     type: ROLE_PERMISSIONS
     condition:
-      combined_services: ["lambda:CreateFunction", "iam:PassRole"]
+      service: ["secretsmanager"]
+      action: "GetSecretValue"
+      exclude_patterns:
+        - "ReadOnly"
+        - "ViewOnly"
+        - "AWSLambdaVPCAccessExecutionRole"
+        - "AWSLambdaBasicExecutionRole"
+        - "AWSLambdaS3ExecutionRole"
+        - "AWSServiceRoleForTrustedAdvisor"
+        - "AWSServiceRoleForSupport"
+        - "AWSServiceRoleForAmazonMacie"
