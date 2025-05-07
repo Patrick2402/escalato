@@ -30,7 +30,7 @@ func LoadRulesFromFile(filePath string) (*models.RuleSet, error) {
 		return nil, fmt.Errorf("error parsing rules file: %w", err)
 	}
 
-	// Teraz wywołaj preprocessRules, gdy ruleSet jest już wypełniony danymi
+	// Now call preprocessRules, when ruleSet is already filled with data
 	preprocessRules(&ruleSet)
 
 	// Validate and normalize the rules
@@ -168,6 +168,9 @@ func validateCondition(condition models.Condition, ruleName string, conditionInd
 		if err := validateCondition(condition.Conditions[0], ruleName, 0); err != nil {
 			return fmt.Errorf("in NOT condition: %w", err)
 		}
+	
+	case models.UnusedPermissionsCondition:
+		// No specific validation needed for now
 	}
 	
 	return nil
@@ -178,21 +181,21 @@ func preprocessRules(ruleSet *models.RuleSet) {
 	for i := range ruleSet.Rules {
 		rule := &ruleSet.Rules[i]
 		
-		// Tylko dla reguł dotyczących ról
+		// Only for rules concerning roles
 		if rule.ResourceType == models.RoleResource {
 			for j := range rule.Conditions {
 				condition := &rule.Conditions[j]
 				
-				// Jeśli warunek dotyczy konkretnej polityki, zamień go na ALL_POLICIES
+				// If condition concerns a specific policy, change it to ALL_POLICIES
 				if condition.Type == models.PolicyDocumentCondition && 
 				   strings.HasPrefix(condition.DocumentPath, "Policies[") {
-					// Zapisz kryteria dopasowania
+					// Save matching criteria
 					match := condition.Match
 					
-					// Zamień typ warunku na ALL_POLICIES
+					// Change condition type to ALL_POLICIES
 					condition.Type = models.AllPoliciesCondition
-					condition.DocumentPath = "" // Nie potrzebne dla ALL_POLICIES
-					condition.Match = match     // Zachowaj kryteria dopasowania
+					condition.DocumentPath = "" // Not needed for ALL_POLICIES
+					condition.Match = match     // Keep matching criteria
 				}
 			}
 		}

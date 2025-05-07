@@ -105,6 +105,23 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 
 				hasWildcardResource := utils.HasWildcardResource(resources)
 				ctx.Data["has_wildcard_resource"] = hasWildcardResource
+				
+				// Count different types of wildcards for confidence rules
+				hasGlobalWildcard := false
+				hasLeadingOrTrailingWildcard := false
+				
+				for _, resource := range resources {
+					if resource == "*" {
+						hasGlobalWildcard = true
+						break
+					}
+					if strings.HasPrefix(resource, "*") || strings.HasSuffix(resource, "*") {
+						hasLeadingOrTrailingWildcard = true
+					}
+				}
+				
+				ctx.Data["has_global_wildcard"] = hasGlobalWildcard
+				ctx.Data["has_leading_or_trailing_wildcard"] = hasLeadingOrTrailingWildcard
 			}
 
 			// Extract information about principals
@@ -134,51 +151,6 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 			ctx.Data["service_matches"] = serviceMatches
 
 			// Generate detailed information for violations
-			// var details strings.Builder
-			// resourceName := ctx.Resource.GetName()
-
-			// // Build details string
-			// if stmt.Effect == "Allow" {
-			// 	nonReadOnlyActions, _ := ctx.Data["non_read_only_actions"].([]string)
-			// 	hasWildcardResource, _ := ctx.Data["has_wildcard_resource"].(bool)
-			// 	hasWildcardPrincipal, _ := ctx.Data["has_wildcard_principal"].(bool)
-
-			// 	if len(nonReadOnlyActions) > 0 {
-			// 		details.WriteString(fmt.Sprintf("Resource '%s' allows ", resourceName))
-
-			// 		// Limit to 3 examples
-			// 		actionExamples := nonReadOnlyActions
-			// 		if len(actionExamples) > 3 {
-			// 			actionExamples = actionExamples[:3]
-			// 		}
-
-			// 		details.WriteString(fmt.Sprintf("%d non-read-only actions (e.g., %s)",
-			// 			len(nonReadOnlyActions), strings.Join(actionExamples, ", ")))
-
-			// 		if hasWildcardResource {
-			// 			details.WriteString(" on resources with wildcard")
-			// 		}
-			// 	} else if hasWildcardPrincipal {
-			// 		details.WriteString(fmt.Sprintf("Resource '%s' allows wildcard principal", resourceName))
-			// 	} else if matchCriteria["service"] != nil {
-			// 		// Handle case for service-specific checks (like secretsmanager)
-			// 		service, _ := matchCriteria["service"].(string)
-			// 		details.WriteString(fmt.Sprintf("Resource '%s' has access to %s", resourceName, service))
-
-			// 		if hasWildcardResource {
-			// 			details.WriteString(" with wildcard resource")
-			// 		}
-			// 	}
-			// }
-
-			// if details.Len() > 0 {
-			// 	ctx.Data["details"] = details.String()
-			// }
-			// W pliku internal/validator/policy.go
-			// Modyfikacja w funkcji Validate metody PolicyDocumentValidator
-			// W części, która generuje szczegóły dla alertu
-
-			// Generate detailed information for violations
 			var details strings.Builder
 			resourceName := ctx.Resource.GetName()
 
@@ -186,10 +158,11 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 			if stmt.Effect == "Allow" {
 				nonReadOnlyActions, _ := ctx.Data["non_read_only_actions"].([]string)
 				hasWildcardResource, _ := ctx.Data["has_wildcard_resource"].(bool)
+				hasGlobalWildcard, _ := ctx.Data["has_global_wildcard"].(bool)
 				hasWildcardPrincipal, _ := ctx.Data["has_wildcard_principal"].(bool)
 
 				if serviceCriteria, ok := matchCriteria["service"].(string); ok && serviceCriteria != "" {
-					// Filtruj tylko akcje związane z tym serwisem
+					// Service-specific actions
 					var serviceActions []string
 					for _, action := range nonReadOnlyActions {
 						if strings.HasPrefix(action, serviceCriteria+":") || action == "*" {
@@ -197,7 +170,7 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 						}
 					}
 
-					// Znajdź też wszystkie akcje dla tego serwisu (również read-only)
+					// Find all actions for this service (including read-only)
 					actions, _ := ctx.Data["actions"].([]string)
 					var allServiceActions []string
 					for _, action := range actions {
@@ -210,32 +183,53 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 						details.WriteString(fmt.Sprintf("Resource '%s' allows %d non-read-only %s actions",
 							resourceName, len(serviceActions), serviceCriteria))
 
-						// Dodaj przykłady akcji
+						// Add action examples
 						if len(serviceActions) <= 3 {
 							details.WriteString(fmt.Sprintf(" (e.g., %s)", strings.Join(serviceActions, ", ")))
 						} else {
 							details.WriteString(fmt.Sprintf(" (e.g., %s, ...)", strings.Join(serviceActions[:3], ", ")))
 						}
 					} else if len(allServiceActions) > 0 {
-						// Jeśli nie ma non-read-only actions, ale są read-only actions
+						// If there are no non-read-only actions, but there are read-only actions
 						details.WriteString(fmt.Sprintf("Resource '%s' has read-only access to %s", resourceName, serviceCriteria))
 
-						// Dodaj przykłady akcji
+						// Add action examples
 						if len(allServiceActions) <= 3 {
 							details.WriteString(fmt.Sprintf(" (%s)", strings.Join(allServiceActions, ", ")))
 						} else {
 							details.WriteString(fmt.Sprintf(" (%s, ...)", strings.Join(allServiceActions[:3], ", ")))
 						}
 					} else {
-						// Jeśli nie znaleziono żadnych akcji dla tego serwisu
+						// If no actions found for this service
 						details.WriteString(fmt.Sprintf("Resource '%s' has access to %s", resourceName, serviceCriteria))
 					}
 
-					if hasWildcardResource {
-						details.WriteString(" with wildcard resource")
+					if hasGlobalWildcard {
+						details.WriteString(" with global wildcard resource")
+					} else if hasWildcardResource {
+						details.WriteString(" with wildcard in resource")
+					}
+				} else if actionCriteria, ok := matchCriteria["action"].(string); ok && actionCriteria != "" {
+					// For specific action criteria like "s3:*" or "lambda:*"
+					service := ""
+					if parts := strings.Split(actionCriteria, ":"); len(parts) > 0 {
+						service = parts[0]
+					}
+					
+					if service != "" {
+						details.WriteString(fmt.Sprintf("Resource '%s' allows wildcard access to %s", 
+							resourceName, strings.ToUpper(service)))
+					} else {
+						details.WriteString(fmt.Sprintf("Resource '%s' allows wildcard access", resourceName))
+					}
+					
+					if hasGlobalWildcard {
+						details.WriteString(" with global wildcard resource (*)")
+					} else if hasWildcardResource {
+						details.WriteString(" with wildcard in resource")
 					}
 				} else if len(nonReadOnlyActions) > 0 {
-					// Stara logika dla przypadków bez konkretnego serwisu
+					// Default logic for cases without specific service
 					details.WriteString(fmt.Sprintf("Resource '%s' allows ", resourceName))
 
 					// Limit to 3 examples
@@ -247,8 +241,10 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 					details.WriteString(fmt.Sprintf("%d non-read-only actions (e.g., %s)",
 						len(nonReadOnlyActions), strings.Join(actionExamples, ", ")))
 
-					if hasWildcardResource {
-						details.WriteString(" on resources with wildcard")
+					if hasGlobalWildcard {
+						details.WriteString(" with global wildcard resource (*)")
+					} else if hasWildcardResource {
+						details.WriteString(" with wildcard in resource")
 					}
 				} else if hasWildcardPrincipal {
 					details.WriteString(fmt.Sprintf("Resource '%s' allows wildcard principal", resourceName))
@@ -285,32 +281,9 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		actions := utils.GetActionsFromStatement(stmt)
 
 		for _, action := range actions {
-			// Check for exact match
-			v.logDebug("Checking action AAAAA: %s against criteria: %s", action, actionCriteria)
-			if action == actionCriteria {
-				actionMatch = true
-				break
-			}
-
-			// Check for wildcard in action (e.g., "service:*")
-			if strings.HasSuffix(action, "*") {
-				actionService := strings.Split(action, ":")[0]
-				criteriaService := strings.Split(actionCriteria, ":")[0]
-
-				if actionService == criteriaService {
-					actionMatch = true
-					break
-				}
-			}
-
-			// Check for global wildcard
-			if action == "*" {
-				actionMatch = true
-				break
-			}
-
-			// Check if criteria ends with wildcard and action starts with prefix
-			if strings.HasSuffix(actionCriteria, "*") && strings.HasPrefix(action, actionCriteria[:len(actionCriteria)-1]) {
+			// Only match exactly the action specified or global wildcard
+			v.logDebug("Checking action: %s against criteria: %s", action, actionCriteria)
+			if action == actionCriteria || action == "*" {
 				actionMatch = true
 				break
 			}

@@ -1,8 +1,35 @@
 # Escalato
 
-Escalato is a flexible, extensible Go-based tool for AWS IAM security auditing and management. It provides comprehensive visibility into IAM configurations and validates them against customizable security rules to identify potential vulnerabilities and misconfigurations.
+```
+,------.                     ,--.          ,--.          
+|  .---' ,---.  ,---. ,--,--.|  | ,--,--.,-'  '-. ,---.  
+|  `--, (  .-' | .--'' ,-.  ||  |' ,-.  |'-.  .-'| .-. | 
+|  `---..-'  `)\ `--.\ '-'  ||  |\ '-'  |  |  |  ' '-' ' 
+`------'`----'  `---' `--`--'`--' `--`--'  `--'   `---'  
+```
 
-## Key Features
+**Escalato** is a powerful, flexible tool for auditing AWS IAM security configurations. It evaluates IAM roles and users against a customizable set of security rules to identify potential vulnerabilities and enforce security best practices.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Basic Commands](#basic-commands)
+  - [Validation](#validation)
+  - [Command Options](#command-options)
+- [Rule Configuration](#rule-configuration)
+  - [Rule Structure](#rule-structure)
+  - [Condition Types](#condition-types)
+  - [Global Exclusions](#global-exclusions)
+  - [Confidence Levels](#confidence-levels)
+- [Examples](#examples)
+- [Technical Architecture](#technical-architecture)
+- [Extending Escalato](#extending-escalato)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+
+## Features
 
 - **Rule-Based Validation**: Define security rules in YAML with a flexible, expression-based syntax
 - **Plugin Architecture**: Easily extend with new rule types without changing the core code
@@ -10,27 +37,17 @@ Escalato is a flexible, extensible Go-based tool for AWS IAM security auditing a
 - **IAM Resource Management**: View and manage roles, users, policies, and permissions
 - **Detailed Reporting**: Comprehensive violation reporting with context and evidence
 - **JSON Export**: Export validation results for integration with other tools
+- **Global Exclusions**: Define roles and users to be excluded from all validations
+- **AWS-Aware**: Intelligent handling of AWS managed roles
 
-## Technical Overview
+## Installation
 
-### Architecture
+### Prerequisites
 
-Escalato is organized with a clean, modular architecture:
+- Go 1.18 or higher
+- AWS credentials configured (via environment variables, AWS profile, or IAM role)
 
-- **Resource Model**: Generic interfaces for AWS resources that decouples validation from specific resource types
-- **Rule Engine**: Flexible, expression-based rule evaluation engine
-- **Validator Registry**: Plugin-based system for registering condition validators
-- **Policy Analyzer**: Sophisticated IAM policy document analysis
-
-### New Components
-
-- **Expression Evaluator**: Evaluates complex logical expressions against resource properties
-- **Evaluation Context**: Collects and shares information during rule evaluation
-- **Condition Validators**: Pluggable validators for different types of security checks
-
-## Using Escalato
-
-### Installation
+### Building from Source
 
 ```bash
 # Clone the repository
@@ -47,16 +64,11 @@ go build -o escalato
 sudo mv escalato /usr/local/bin/
 ```
 
-### Command Reference
+## Usage
 
-#### Global Flags
+### Basic Commands
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--profile, -p` | AWS profile to use | Default profile |
-| `--region, -r` | AWS region | us-east-1 |
-
-#### User & Role Commands
+Escalato provides several commands to interact with AWS IAM resources:
 
 ```bash
 # List all IAM users
@@ -65,19 +77,26 @@ escalato users
 # List all IAM roles
 escalato roles
 
-# Show detailed information with various flags
+# Show detailed information about users
 escalato users --details
-escalato roles --trusted --policies --last-activity
+
+# Show roles with their trusted policies and attached policies
+escalato roles --trusted --policies
+
+# Show last activity information
+escalato roles --last-activity
 ```
 
-#### Validation Command
+### Validation
+
+The core functionality of Escalato is validating IAM resources against security rules:
 
 ```bash
 # Run validation with default rules
 escalato validate
 
 # Use custom rules file
-escalato validate --rules /path/to/rules.yml
+escalato validate --rules custom-rules.yml
 
 # Filter by confidence or severity
 escalato validate --min-confidence HIGH --min-severity MEDIUM
@@ -89,9 +108,44 @@ escalato validate --output-json results.json
 escalato validate --diagnostics
 ```
 
-## Defining Security Rules
+### Command Options
 
-Escalato uses a flexible YAML format for defining rules. Each rule consists of:
+#### Global Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--profile`, `-p` | AWS profile to use | Default profile |
+| `--region`, `-r` | AWS region | us-east-1 |
+
+#### User & Role Commands
+
+| Flag | Description |
+|------|-------------|
+| `--details` | Show detailed information (users) |
+| `--access-keys` | Show access keys information (users) |
+| `--policies` | Show attached and inline policies |
+| `--groups` | Show group memberships (users) |
+| `--trusted` | Show trusted entities (roles) |
+| `--last-activity` | Show last activity information |
+
+#### Validation Command
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--rules` | Path to rules YAML file | escalato-rules.yml |
+| `--output-json` | Export results to JSON file | |
+| `--diagnostics` | Enable diagnostic output | false |
+| `--min-confidence` | Minimum confidence level (HIGH, MEDIUM, LOW) | |
+| `--min-severity` | Minimum severity level (CRITICAL, HIGH, MEDIUM, LOW, INFO) | |
+| `--skip-aws-roles` | Skip AWS managed roles during validation | true |
+
+## Rule Configuration
+
+Escalato uses a YAML file to define both security rules and global configurations.
+
+### Rule Structure
+
+Each rule consists of the following components:
 
 ```yaml
 - id: rule_id
@@ -111,11 +165,11 @@ Escalato uses a flexible YAML format for defining rules. Each rule consists of:
 
 ### Condition Types
 
-The new rule engine supports multiple condition types:
+Escalato supports multiple condition types to define flexible security rules:
 
 #### POLICY_DOCUMENT
 
-Validates IAM policy documents:
+Evaluates IAM policy documents:
 
 ```yaml
 type: POLICY_DOCUMENT
@@ -127,6 +181,18 @@ match:
   has_condition: false
   principal:
     has_wildcard: true
+```
+
+#### ALL_POLICIES
+
+Checks all policies attached to a role or user:
+
+```yaml
+type: ALL_POLICIES
+match:
+  statement_effect: "Allow"
+  action: "iam:*"
+  resource: "*"
 ```
 
 #### RESOURCE_PROPERTY
@@ -161,6 +227,15 @@ property_path: "AccessKeys[0].CreateDate"
 threshold: 90  # days
 ```
 
+#### UNUSED_PERMISSIONS
+
+Identifies unused permissions:
+
+```yaml
+type: UNUSED_PERMISSIONS
+threshold: 90  # days
+```
+
 #### Logical Operators
 
 Combine conditions with logical operators:
@@ -174,16 +249,39 @@ conditions:
     # ...
 ```
 
-### Confidence Rules
+### Global Exclusions
+
+Define global exclusions at the top level of your rules file:
+
+```yaml
+# Global exclusion lists
+excluded_roles:
+  - AWSReservedSSO_AdministratorAccess
+  - emergency-access-role
+  - break-glass-role
+
+excluded_users:
+  - admin
+  - service-account
+
+# Rules follow...
+rules:
+  - id: first_rule
+    # ...
+```
+
+### Confidence Levels
 
 Define how confident the tool is in its findings:
 
 ```yaml
 confidence_rules:
   - level: HIGH
-    when: "has_wildcard_principal && !has_conditions"
+    when: "has_global_wildcard"
   - level: MEDIUM
-    when: "non_read_only_count > 5"
+    when: "has_leading_or_trailing_wildcard"
+  - level: LOW
+    when: "has_wildcard_resource"
   - level: LOW
     default: true
 ```
@@ -192,51 +290,101 @@ confidence_rules:
 
 Here are some examples of common security rules:
 
-### Wildcard in AssumeRole Trust Policy
+### S3 Wildcard Access
 
 ```yaml
-- id: wildcard_assume_role
-  name: "Wildcard in AssumeRole Trust Policy"
-  description: "Role has a trusted policy with sts:AssumeRole and wildcard principal"
-  severity: CRITICAL
+- id: s3_wildcard_access
+  name: "S3 Wildcard Access"
+  description: "Role has wildcard access to S3 buckets"
+  severity: HIGH
   resource_type: Role
   conditions:
-    - type: POLICY_DOCUMENT
-      document_path: "TrustPolicy"
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "s3:*"
+        resource: "*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_global_wildcard"
+    - level: MEDIUM
+      when: "has_wildcard_resource"
+    - level: LOW
+      default: true
+```
+
+### AssumeRole With Wildcards
+
+```yaml
+- id: sts_assumeRole_wildcards
+  name: "AssumeRole With Wildcards"
+  description: "Role allows sts:AssumeRole with wildcard resources"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
       match:
         statement_effect: "Allow"
         action: "sts:AssumeRole"
-        principal:
-          has_wildcard: true
   confidence_rules:
     - level: HIGH
-      when: "has_wildcard_principal && !has_conditions"
+      when: "has_global_wildcard"
     - level: MEDIUM
-      when: "has_wildcard_principal && has_conditions"
+      when: "has_leading_or_trailing_wildcard"
+    - level: LOW
+      when: "has_wildcard_resource"
     - level: LOW
       default: true
 ```
 
-### Outdated Access Keys
+### Unused Role Permissions
 
 ```yaml
-- id: outdated_access_key
-  name: "Outdated Access Key"
-  description: "User has access key older than 180 days"
-  severity: HIGH
-  resource_type: User
+- id: unused_role_permissions
+  name: "Unused Role Permissions"
+  description: "Role has permissions that haven't been used in the last 90 days"
+  severity: MEDIUM
+  resource_type: Role
   conditions:
-    - type: AGE_CONDITION
-      property_path: "AccessKeys[0].CreateDate"
-      threshold: 180
+    - type: UNUSED_PERMISSIONS
+      threshold: 90  # days
   confidence_rules:
     - level: HIGH
-      when: "ageInDays > 365"
+      when: "days_inactive > 180"
     - level: MEDIUM
-      when: "ageInDays > 270"
+      when: "days_inactive > 90"
     - level: LOW
       default: true
 ```
+
+## Technical Architecture
+
+Escalato is organized with a clean, modular architecture:
+
+### Core Components
+
+- **Resource Model**: Generic interfaces for AWS resources that decouples validation from specific resource types
+- **Rule Engine**: Flexible, expression-based rule evaluation engine
+- **Validator Registry**: Plugin-based system for registering condition validators
+- **Policy Analyzer**: Sophisticated IAM policy document analysis
+
+### Key Packages
+
+- `cmd`: Command-line interface definitions
+- `internal/aws`: AWS client and resource fetching
+- `internal/models`: Core data structures
+- `internal/rules`: Rule engine, parser, and evaluation
+- `internal/validator`: Condition validators
+- `internal/utils`: Helper utilities
+
+### Evaluation Process
+
+1. Parse YAML rule definitions
+2. Fetch IAM resources from AWS
+3. Apply exclusions and filters
+4. Evaluate rules against resources
+5. Determine confidence levels
+6. Generate detailed reporting
 
 ## Extending Escalato
 
@@ -252,38 +400,37 @@ Here are some examples of common security rules:
 2. Implement a new validator that implements the `validator.ConditionValidator` interface
 3. Register it in the validator registry
 
-### Creating Custom Expressions
+### Creating Custom Rules
 
-Use the expression evaluator to create custom expressions for confidence rules:
+Create a new YAML file with custom rules tailored to your organization's security requirements. Refer to the [Rule Configuration](#rule-configuration) section for details.
 
-```go
-// Register a custom function
-evaluator.RegisterFunction("isHighRiskService", func(args ...interface{}) (interface{}, error) {
-    if len(args) != 1 {
-        return nil, errors.New("isHighRiskService requires 1 argument")
-    }
-    
-    service, ok := args[0].(string)
-    if !ok {
-        return nil, errors.New("argument must be a string")
-    }
-    
-    highRiskServices := []string{"iam", "lambda", "ec2", "cloudformation", "s3"}
-    for _, s := range highRiskServices {
-        if service == s {
-            return true, nil
-        }
-    }
-    
-    return false, nil
-})
+## Troubleshooting
+
+### Common Issues
+
+- **AWS Credentials**: Ensure your AWS credentials are correctly configured
+- **Permission Denied**: Verify you have sufficient IAM permissions to read IAM data
+- **Rule Syntax Errors**: Check your YAML for correct formatting and syntax
+- **No Findings Generated**: Verify your rule conditions match expected patterns
+
+### Diagnostic Mode
+
+Enable diagnostic mode for detailed logs:
+
+```bash
+escalato validate --diagnostics
 ```
 
-## Performance Considerations
+## Contributing
 
-- Resource properties are accessed using reflection only when needed
-- Evaluation context caches intermediate results during rule evaluation
-- Policy documents are parsed only once
-- Multiple AWS resources are processed concurrently
-- Diagnostic logging can be enabled only when needed
+Contributions are welcome! Please feel free to submit a Pull Request.
 
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

@@ -32,6 +32,7 @@ const (
 	OrCondition               ConditionType = "OR"
 	NotCondition              ConditionType = "NOT"
 	AllPoliciesCondition      ConditionType = "ALL_POLICIES" 
+	UnusedPermissionsCondition ConditionType = "UNUSED_PERMISSIONS" // Add this line
 )
 
 type Rule struct {
@@ -66,5 +67,7 @@ type ConfidenceRule struct {
 }
 
 type RuleSet struct {
-	Rules []Rule `yaml:"rules"`
+	Rules          []Rule    `yaml:"rules"`
+	ExcludedRoles  []string  `yaml:"excluded_roles,omitempty"`
+	ExcludedUsers  []string  `yaml:"excluded_users,omitempty"`
 }

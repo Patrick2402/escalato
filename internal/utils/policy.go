@@ -91,27 +91,18 @@ func ParsePolicyDocument(docString string) (*PolicyDocument, error) {
 func GetActionsFromStatement(stmt PolicyStatement) []string {
     var actions []string
     
-    fmt.Printf("Action in statement type: %T, value: %v\n", stmt.Action, stmt.Action)
-    
     switch a := stmt.Action.(type) {
     case string:
         actions = append(actions, a)
-        fmt.Printf("Action is a string: %s\n", a)
     case []interface{}:
-        fmt.Printf("Action is a slice of interface{}, length: %d\n", len(a))
-        for i, action := range a {
+        for _, action := range a {
             if actionStr, ok := action.(string); ok {
                 actions = append(actions, actionStr)
-                fmt.Printf("Action[%d] = %s\n", i, actionStr)
-            } else {
-                fmt.Printf("Action[%d] is not a string, type: %T\n", i, action)
-            }
+            } 
         }
     case []string:
         actions = append(actions, a...)
-        fmt.Printf("Action is a slice of strings: %v\n", a)
     default:
-        fmt.Printf("Unknown action type: %T\n", stmt.Action)
     }
     
     return actions

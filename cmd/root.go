@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"escalato/internal/utils"
 	"fmt"
 	"os"
 
@@ -15,9 +16,10 @@ It currently supports displaying users and roles`,
 }
 
 func Execute() error {
+	utils.DisplayBanner()
+
 	return rootCmd.Execute()
 }
-
 func init() {
 	rootCmd.PersistentFlags().StringP("profile", "p", "", "Profil AWS")
 	rootCmd.PersistentFlags().StringP("region", "r", "us-east-1", "Region AWS")
