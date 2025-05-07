@@ -81,9 +81,22 @@ var validateCmd = &cobra.Command{
 			}
 		}
 
+		// Create maps for quick lookups of excluded resources
+		excludedRoles := make(map[string]bool)
+		for _, roleName := range ruleSet.ExcludedRoles {
+			excludedRoles[roleName] = true
+		}
+
+		excludedUsers := make(map[string]bool)
+		for _, userName := range ruleSet.ExcludedUsers {
+			excludedUsers[userName] = true
+		}
+
 		// Convert AWS resources to generic resources
 		var resources []models.Resource
 		skippedRoles := 0
+		excludedRolesCount := 0
+
 		for i := range awsRoles {
 			// Skip AWS managed roles if the flag is set
 			if skipAwsRoles && isAWSManagedRole(awsRoles[i].RoleName, awsRoles[i].Path) {
@@ -93,15 +106,41 @@ var validateCmd = &cobra.Command{
 				skippedRoles++
 				continue
 			}
+			
+			// Skip roles in the exclusion list
+			if excludedRoles[awsRoles[i].RoleName] {
+				if enableDiagnostics {
+					fmt.Printf("Excluding role from validation: %s\n", awsRoles[i].RoleName)
+				}
+				excludedRolesCount++
+				continue
+			}
+			
 			resources = append(resources, &awsRoles[i])
 		}
 		
+		excludedUsersCount := 0
+		for i := range awsUsers {
+			// Skip users in the exclusion list
+			if excludedUsers[awsUsers[i].UserName] {
+				if enableDiagnostics {
+					fmt.Printf("Excluding user from validation: %s\n", awsUsers[i].UserName)
+				}
+				excludedUsersCount++
+				continue
+			}
+			
+			resources = append(resources, &awsUsers[i])
+		}
+
 		if skippedRoles > 0 {
 			fmt.Printf("Skipped %d AWS managed roles\n", skippedRoles)
 		}
-		
-		for i := range awsUsers {
-			resources = append(resources, &awsUsers[i])
+		if excludedRolesCount > 0 {
+			fmt.Printf("Excluded %d roles based on exclusion list\n", excludedRolesCount)
+		}
+		if excludedUsersCount > 0 {
+			fmt.Printf("Excluded %d users based on exclusion list\n", excludedUsersCount)
 		}
 
 		// Create validator registry and rule engine
@@ -148,24 +187,38 @@ var validateCmd = &cobra.Command{
 	},
 }
 
-// isAWSManagedRole sprawdza, czy rola jest rolą zarządzaną przez AWS
+// isAWSManagedRole checks if a role is an AWS managed role
 func isAWSManagedRole(roleName, rolePath string) bool {
-	// Sprawdź ścieżkę zawierającą aws-service-role
+	// Check path containing aws-service-role
 	if strings.Contains(rolePath, "/aws-service-role/") {
 		return true
 	}
 	
-	// Sprawdź prefiks roli
+	// Check for AWSServiceRole prefix (specifically for AWS service roles)
 	if strings.HasPrefix(roleName, "AWSServiceRole") {
 		return true
 	}
 	
-	// Sprawdź prefiks AWS
-	if strings.HasPrefix(roleName, "AWS") {
-		return true
+	// Check for specific AWS prefixes (not ALL AWS prefixes)
+	awsPrefixes := []string{
+		"AWSServiceRoleFor",
+		"AWS-QuickSetup",
+		"AmazonSSM",
+		"AmazonMQ",
 	}
 	
-	// Inne typowe role AWS
+	for _, prefix := range awsPrefixes {
+		if strings.HasPrefix(roleName, prefix) {
+			return true
+		}
+	}
+	
+	// DO NOT skip SSO roles - they may have important permissions
+	if strings.Contains(roleName, "AWSReservedSSO") {
+		return false
+	}
+	
+	// Other typical AWS roles
 	awsRoles := []string{
 		"OrganizationAccountAccessRole",
 		"admin",
@@ -184,10 +237,10 @@ func isAWSManagedRole(roleName, rolePath string) bool {
 	return false
 }
 
-// registerValidators rejestruje wszystkie walidatory w rejestrze
-// W funkcji registerValidators dodaj:
+// registerValidators registers all validators in the registry
+// In the registerValidators function add:
 func registerValidators(registry *rules.ValidatorRegistry, diagnostics bool) {
-	// Logiczne walidatory
+	// Logic validators
 	registry.RegisterValidator(models.AndCondition, 
 		validator.NewAndValidator(registry, diagnostics))
 	registry.RegisterValidator(models.OrCondition, 
@@ -195,23 +248,27 @@ func registerValidators(registry *rules.ValidatorRegistry, diagnostics bool) {
 	registry.RegisterValidator(models.NotCondition, 
 		validator.NewNotValidator(registry, diagnostics))
 	
-	// Walidatory zasobów
+	// Resource validators
 	registry.RegisterValidator(models.ResourcePropertyCondition, 
 		validator.NewResourcePropertyValidator(diagnostics))
 	registry.RegisterValidator(models.PatternMatchCondition, 
 		validator.NewPatternMatchValidator(diagnostics))
 	
-	// Walidatory policy
+	// Policy validators
 	registry.RegisterValidator(models.PolicyDocumentCondition, 
 		validator.NewPolicyDocumentValidator(diagnostics))
 	
-	// Walidator wszystkich polityk
+	// All policies validator
 	registry.RegisterValidator(models.AllPoliciesCondition, 
 		validator.NewAllPoliciesValidator(diagnostics))
 	
-	// Walidatory czasowe
+	// Time validators
 	registry.RegisterValidator(models.AgeCondition, 
 		validator.NewAgeValidator(diagnostics))
+		
+	// Unused permissions validator
+	registry.RegisterValidator(models.UnusedPermissionsCondition, 
+		validator.NewUnusedPermissionsValidator(diagnostics))
 }
 
 // filterResults filters validation results by confidence and severity

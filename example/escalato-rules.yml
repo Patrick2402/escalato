@@ -1,215 +1,220 @@
 # # Escalato Security Rules
 # # This file defines security rules for AWS IAM configurations using the new flexible rule engine
+excluded_roles:
+  - adminadmin
+excluded_users:
+  - example-user
+
 rules:
-#   - id: admin_permissions
-#     name: "Administrative IAM Permissions"
-#     description: "Resource has administrative access to IAM"
-#     severity: HIGH
-#     resource_type: Role
-#     conditions:
-#       - type: OR
-#         conditions:
-#           - type: ALL_POLICIES
-#             match:
-#               statement_effect: "Allow"
-#               service: "iam"
-#               action: "*"
-#     confidence_rules:
-#       - level: HIGH
-#         when: "has_wildcard_resource"
-#       - level: MEDIUM
-#         when: "non_read_only_count > 5"
-#       - level: LOW
-#         default: true
+  - id: admin_permissions
+    name: "Administrative IAM Permissions"
+    description: "Resource has administrative access to IAM"
+    severity: HIGH
+    resource_type: Role
+    conditions:
+      - type: OR
+        conditions:
+          - type: ALL_POLICIES
+            match:
+              statement_effect: "Allow"
+              service: "iam"
+              action: "*"
+    confidence_rules:
+      - level: HIGH
+        when: "has_wildcard_resource"
+      - level: MEDIUM
+        when: "non_read_only_count > 5"
+      - level: LOW
+        default: true
 
-#   - id: outdated_access_key
-#     name: "Outdated Access Key"
-#     description: "User has access key older than 180 days"
-#     severity: HIGH
-#     resource_type: User
-#     conditions:
-#       - type: AGE_CONDITION
-#         property_path: "AccessKeys[0].CreateDate"
-#         threshold: 180
-#     confidence_rules:
-#       - level: HIGH
-#         when: "ageInDays > 365"
-#       - level: MEDIUM
-#         when: "ageInDays > 270"
-#       - level: LOW
-#         default: true
+  - id: outdated_access_key
+    name: "Outdated Access Key"
+    description: "User has access key older than 180 days"
+    severity: HIGH
+    resource_type: User
+    conditions:
+      - type: AGE_CONDITION
+        property_path: "AccessKeys[0].CreateDate"
+        threshold: 180
+    confidence_rules:
+      - level: HIGH
+        when: "ageInDays > 365"
+      - level: MEDIUM
+        when: "ageInDays > 270"
+      - level: LOW
+        default: true
 
-#   - id: secrets_manager_access
-#     name: "Secrets Manager GetSecretValue Access"
-#     description: "Resource has access to get secret values from AWS Secrets Manager"
-#     severity: HIGH
-#     resource_type: Role
-#     conditions:
-#       - type: ALL_POLICIES
-#         match:
-#           statement_effect: "Allow"
-#           service: "secretsmanager"
-#           action: "secretsmanager:GetSecretValue"
-#     confidence_rules:
-#       - level: HIGH
-#         when: "has_wildcard_resource && non_read_only_count > 3"
-#       - level: MEDIUM
-#         when: "has_wildcard_resource"
-#       - level: LOW
-#         default: true
+  - id: secrets_manager_access
+    name: "Secrets Manager GetSecretValue Access"
+    description: "Resource has access to get secret values from AWS Secrets Manager"
+    severity: HIGH
+    resource_type: Role
+    conditions:
+      - type: ALL_POLICIES
+        match:
+          statement_effect: "Allow"
+          service: "secretsmanager"
+          action: "secretsmanager:GetSecretValue"
+    confidence_rules:
+      - level: HIGH
+        when: "has_wildcard_resource && non_read_only_count > 3"
+      - level: MEDIUM
+        when: "has_wildcard_resource"
+      - level: LOW
+        default: true
 
-# - id: inactive_user
-#   name: "Inactive User"
-#   description: "User has not been active in the last 90 days"
-#   severity: MEDIUM
-#   resource_type: User
-#   conditions:
-#     - type: OR
-#       conditions:
-#         - type: RESOURCE_PROPERTY
-#           property_path: "LastUsed"
-#           value: null
-#         - type: AGE_CONDITION
-#           property_path: "AccessKeys[0].LastUsed.Date"
-#           threshold: 90
-#   confidence_rules:
-#     - level: HIGH
-#       when: "LastUsed == null"
-#     - level: MEDIUM
-#       when: "ageInDays > 180"
-#     - level: LOW
-#       default: true
+- id: inactive_user
+  name: "Inactive User"
+  description: "User has not been active in the last 90 days"
+  severity: MEDIUM
+  resource_type: User
+  conditions:
+    - type: OR
+      conditions:
+        - type: RESOURCE_PROPERTY
+          property_path: "LastUsed"
+          value: null
+        - type: AGE_CONDITION
+          property_path: "AccessKeys[0].LastUsed.Date"
+          threshold: 90
+  confidence_rules:
+    - level: HIGH
+      when: "LastUsed == null"
+    - level: MEDIUM
+      when: "ageInDays > 180"
+    - level: LOW
+      default: true
 
-# - id: assume_role_no_condition
-#   name: "AssumeRole Without Conditions"
-#   description: "Role has a trusted policy with sts:AssumeRole without required conditions"
-#   severity: CRITICAL
-#   resource_type: Role
-#   conditions:
-#     - type: POLICY_DOCUMENT
-#       document_path: "TrustPolicy"
-#       match:
-#         statement_effect: "Allow"
-#         action: "sts:AssumeRole"
-#         has_condition: false
-#     - type: NOT
-#       conditions:
-#         - type: OR
-#           conditions:
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "lambda.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "ec2.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "cloudformation.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "eks.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "firehose.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "ecs-tasks.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "s3.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "scheduler.amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "events.amazonaws.com"
-#               options:
-#                 type: "contains"
-#   confidence_rules:
-#     - level: HIGH
-#       when: "has_wildcard_principal"
-#     - level: MEDIUM
-#       when: "!has_wildcard_principal && principal_count > 0"
-#     - level: LOW
-#       default: true
+- id: assume_role_no_condition
+  name: "AssumeRole Without Conditions"
+  description: "Role has a trusted policy with sts:AssumeRole without required conditions"
+  severity: CRITICAL
+  resource_type: Role
+  conditions:
+    - type: POLICY_DOCUMENT
+      document_path: "TrustPolicy"
+      match:
+        statement_effect: "Allow"
+        action: "sts:AssumeRole"
+        has_condition: false
+    - type: NOT
+      conditions:
+        - type: OR
+          conditions:
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "lambda.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "ec2.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "cloudformation.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "eks.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "firehose.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "ecs-tasks.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "s3.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "scheduler.amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "events.amazonaws.com"
+              options:
+                type: "contains"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_principal"
+    - level: MEDIUM
+      when: "!has_wildcard_principal && principal_count > 0"
+    - level: LOW
+      default: true
 
-### VERIFIED but this probably will not happened 
-# - id: wildcard_assume_role
-#   name: "Wildcard in AssumeRole Trust Policy"
-#   description: "Role has a trusted policy with sts:AssumeRole and wildcard principal"
-#   severity: CRITICAL
-#   resource_type: Role
-#   conditions:
-#     - type: POLICY_DOCUMENT
-#       document_path: "TrustPolicy"
-#       match:
-#         statement_effect: "Allow"
-#         action: "sts:AssumeRole"
-#         principal:
-#           has_wildcard: true
-#   confidence_rules:
-#     - level: HIGH
-#       when: "has_wildcard_principal && !has_conditions"
-#     - level: MEDIUM
-#       when: "has_wildcard_principal && has_conditions"
-#     - level: LOW
-#       default: true
-
-
-# Working well
-# - id: cross_account_access
-#   name: "Cross Account Access"
-#   description: "Role allows cross-account access from external AWS accounts"
-#   severity: HIGH
-#   resource_type: Role
-#   conditions:
-#     - type: POLICY_DOCUMENT
-#       document_path: "TrustPolicy"
-#       match:
-#         statement_effect: "Allow"
-#         action: "sts:AssumeRole"
-#     - type: NOT
-#       conditions:
-#         - type: OR
-#           conditions:
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "amazonaws.com"
-#               options:
-#                 type: "contains"
-#             - type: PATTERN_MATCH
-#               property_path: "TrustPolicy"
-#               pattern: "arn:aws:iam::541889288027:root"
-#               options:
-#                 type: "contains"
-#   confidence_rules:
-#     - level: HIGH
-#       when: "has_wildcard_principal"
-#     - level: MEDIUM
-#       when: "!has_conditions"
-#     - level: LOW
-#       default: true
+## VERIFIED but this probably will not happened 
+- id: wildcard_assume_role
+  name: "Wildcard in AssumeRole Trust Policy"
+  description: "Role has a trusted policy with sts:AssumeRole and wildcard principal"
+  severity: CRITICAL
+  resource_type: Role
+  conditions:
+    - type: POLICY_DOCUMENT
+      document_path: "TrustPolicy"
+      match:
+        statement_effect: "Allow"
+        action: "sts:AssumeRole"
+        principal:
+          has_wildcard: true
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_principal && !has_conditions"
+    - level: MEDIUM
+      when: "has_wildcard_principal && has_conditions"
+    - level: LOW
+      default: true
 
 
-- id: kms_admin_access
-  name: "KMS Key Administration"
-  description: "Role has permissions to create/delete/modify KMS keys"
+Working well
+- id: cross_account_access
+  name: "Cross Account Access"
+  description: "Role allows cross-account access from external AWS accounts"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: POLICY_DOCUMENT
+      document_path: "TrustPolicy"
+      match:
+        statement_effect: "Allow"
+        action: "sts:AssumeRole"
+    - type: NOT
+      conditions:
+        - type: OR
+          conditions:
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "amazonaws.com"
+              options:
+                type: "contains"
+            - type: PATTERN_MATCH
+              property_path: "TrustPolicy"
+              pattern: "arn:aws:iam::541889288027:root"
+              options:
+                type: "contains"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_principal"
+    - level: MEDIUM
+      when: "!has_conditions"
+    - level: LOW
+      default: true
+
+
+- id: kms_decrypt_access
+  name: "KMS Key Decryption Access"
+  description: "Role has permissions to decrypt KMS keys"
   severity: HIGH
   resource_type: Role
   conditions:
@@ -234,7 +239,127 @@ rules:
       match:
         statement_effect: "Allow"
         action: "s3:*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+
+- id: iam_wildcard_access
+  name: "IAM Wildcard Access"
+  description: "Role has wildcard access to iam resources"
+  severity: CRITICAL
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "iam:*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+
+- id: lambda_wildcard_access
+  name: "Lambda Wildcard Access"
+  description: "Role has wildcard access to Lambda Functions"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "lambda:*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+
+- id: ec2_wildcard_access
+  name: "EC2 Wildcard Access"
+  description: "Role has wildcard access to EC2 instances"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "ec2:*"
         resource: "*"
   confidence_rules:
     - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+
+- id: dynamodb_wildcard_access
+  name: "DynamoDB Wildcard Access"
+  description: "Role has wildcard access to DynamoDB tables"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "dynamodb:*"
+        resource: "*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+
+- id: admin_wildcard_access
+  name: "Admin Wildcard Access"
+  description: "Role has dangerous global wildcard permissions"
+  severity: CRITICAL
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "*"
+        resource: "*"
+  confidence_rules:
+    - level: HIGH
+      default: true
+
+
+- id: sts_assumeRole_wildcards
+  name: "AssumeRole With Wildcards"
+  description: "Role allows sts:AssumeRole with wildcard resources"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action: "sts:AssumeRole"
+  confidence_rules:
+    - level: HIGH
+      when: "has_global_wildcard"
+    - level: MEDIUM
+      when: "has_leading_or_trailing_wildcard"
+    - level: LOW
+      when: "has_wildcard_resource"
+    - level: LOW
+      default: true
+
+
+- id: unused_role_permissions
+  name: "Unused Role Permissions"
+  description: "Role has permissions that haven't been used in the last 90 days"
+  severity: MEDIUM
+  resource_type: Role
+  conditions:
+    - type: UNUSED_PERMISSIONS
+      threshold: 90  
+  confidence_rules:
+    - level: HIGH
+      when: "days_inactive > 180"
+    - level: MEDIUM
+      when: "days_inactive > 90"
+    - level: LOW
       default: true
