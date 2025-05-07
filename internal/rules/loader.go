@@ -3,29 +3,38 @@ package rules
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 	"escalato/internal/models"
 )
 
+// LoadRulesFromFile loads rules from a YAML file
 func LoadRulesFromFile(filePath string) (*models.RuleSet, error) {
+	// Check if file exists
 	_, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return nil, fmt.Errorf("rules file not found: %s", filePath)
 	}
 
+	// Read the file
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("error reading rules file: %w", err)
 	}
 
+	// Parse the YAML
 	var ruleSet models.RuleSet
 	err = yaml.Unmarshal(data, &ruleSet)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing rules file: %w", err)
 	}
 
-	err = validateRules(ruleSet.Rules)
+	// Teraz wywołaj preprocessRules, gdy ruleSet jest już wypełniony danymi
+	preprocessRules(&ruleSet)
+
+	// Validate and normalize the rules
+	err = validateRules(&ruleSet)
 	if err != nil {
 		return nil, fmt.Errorf("invalid rules: %w", err)
 	}
@@ -33,70 +42,159 @@ func LoadRulesFromFile(filePath string) (*models.RuleSet, error) {
 	return &ruleSet, nil
 }
 
-func validateRules(rules []models.Rule) error {
-	for i, rule := range rules {
+// validateRules checks that all rules are valid and normalizes them
+func validateRules(ruleSet *models.RuleSet) error {
+	for i := range ruleSet.Rules {
+		rule := &ruleSet.Rules[i]
+		
+		// Ensure rule has an ID
+		if rule.ID == "" {
+			// Generate ID from name if not provided
+			rule.ID = strings.ToLower(strings.ReplaceAll(rule.Name, " ", "_"))
+		}
+		
+		// Validate required fields
 		if rule.Name == "" {
 			return fmt.Errorf("rule #%d missing name", i+1)
 		}
-		if rule.Type == "" {
-			return fmt.Errorf("rule %s missing type", rule.Name)
+		
+		if rule.ResourceType == "" {
+			return fmt.Errorf("rule '%s' missing resource_type", rule.Name)
 		}
+		
 		if rule.Severity == "" {
-			return fmt.Errorf("rule %s missing severity", rule.Name)
+			return fmt.Errorf("rule '%s' missing severity", rule.Name)
 		}
-
-		switch rule.Type {
-		case models.RoleTrustPolicy:
-			// Specjalna obsługa dla reguły AssumeRole bez warunków lub Cross Account Access
-			if rule.Condition.RequireConditions && rule.Condition.Action == "sts:AssumeRole" {
-				// Jeśli to reguła wymagająca warunków dla AssumeRole, nie wymagamy service
-				continue
+		
+		// Ensure at least one condition
+		if len(rule.Conditions) == 0 {
+			return fmt.Errorf("rule '%s' has no conditions", rule.Name)
+		}
+		
+		// Validate each condition
+		for j, condition := range rule.Conditions {
+			if err := validateCondition(condition, rule.Name, j); err != nil {
+				return err
 			}
-			
-			if rule.Condition.AWSPrincipal {
-				// Dla reguł cross-account access, nie wymagamy service
-				continue
+		}
+		
+		// Set default confidence rule if none provided
+		if len(rule.ConfidenceRules) == 0 {
+			rule.ConfidenceRules = []models.ConfidenceRule{
+				{
+					Level:   models.MediumConfidence,
+					Default: true,
+				},
 			}
-			
-			var hasService bool
-			switch svc := rule.Condition.Service.(type) {
-			case string:
-				hasService = svc != ""
-			case []interface{}, []string:
-				hasService = true  // Assume non-empty array
-			default:
-				hasService = false
+		}
+		
+		// Ensure at least one default confidence rule
+		hasDefault := false
+		for _, confRule := range rule.ConfidenceRules {
+			if confRule.Default {
+				hasDefault = true
+				break
 			}
-			
-			if !hasService {
-				return fmt.Errorf("rule %s of type %s requires a service condition", rule.Name, rule.Type)
-			}
-		case models.RolePermissions, models.UserPermissions:
-			if rule.Condition.ManagedPolicy != "" {
-				continue
-			}
-			
-			var hasService bool
-			switch svc := rule.Condition.Service.(type) {
-			case string:
-				hasService = svc != ""
-			case []interface{}, []string:
-				hasService = true  // Assume non-empty array 
-			default:
-				hasService = false
-			}
-			
-			if !hasService || rule.Condition.Action == "" {
-				return fmt.Errorf("rule %s of type %s requires both service and action conditions", rule.Name, rule.Type)
-			}
-		case models.UserAccessKey:
-			if rule.Condition.KeyAge == 0 && rule.Condition.KeyStatus == "" {
-				return fmt.Errorf("rule %s of type %s requires either key_age or key_status condition", rule.Name, rule.Type)
-			}
-		default:
-			return fmt.Errorf("rule %s has unknown rule type: %s", rule.Name, rule.Type)
+		}
+		
+		if !hasDefault {
+			rule.ConfidenceRules = append(rule.ConfidenceRules, models.ConfidenceRule{
+				Level:   models.MediumConfidence,
+				Default: true,
+			})
 		}
 	}
-
+	
 	return nil
+}
+
+// validateCondition validates a single condition
+func validateCondition(condition models.Condition, ruleName string, conditionIndex int) error {
+	if condition.Type == "" {
+		return fmt.Errorf("rule '%s' condition #%d missing type", ruleName, conditionIndex+1)
+	}
+	
+	switch condition.Type {
+	case models.PolicyDocumentCondition:
+		if condition.DocumentPath == "" {
+			return fmt.Errorf("rule '%s' condition #%d missing document_path", 
+				ruleName, conditionIndex+1)
+		}
+	
+	case models.ResourcePropertyCondition:
+		if condition.PropertyPath == "" {
+			return fmt.Errorf("rule '%s' condition #%d missing property_path", 
+				ruleName, conditionIndex+1)
+		}
+	
+	case models.PatternMatchCondition:
+		if condition.PropertyPath == "" {
+			return fmt.Errorf("rule '%s' condition #%d missing property_path", 
+				ruleName, conditionIndex+1)
+		}
+		if condition.Pattern == "" {
+			return fmt.Errorf("rule '%s' condition #%d missing pattern", 
+				ruleName, conditionIndex+1)
+		}
+	
+	case models.AgeCondition:
+		if condition.PropertyPath == "" {
+			return fmt.Errorf("rule '%s' condition #%d missing property_path", 
+				ruleName, conditionIndex+1)
+		}
+		if condition.Threshold <= 0 {
+			return fmt.Errorf("rule '%s' condition #%d threshold must be positive", 
+				ruleName, conditionIndex+1)
+		}
+	
+	case models.AndCondition, models.OrCondition:
+		if len(condition.Conditions) == 0 {
+			return fmt.Errorf("rule '%s' condition #%d (%s) has no sub-conditions", 
+				ruleName, conditionIndex+1, condition.Type)
+		}
+		
+		for i, subCondition := range condition.Conditions {
+			if err := validateCondition(subCondition, ruleName, i); err != nil {
+				return fmt.Errorf("in %s condition: %w", condition.Type, err)
+			}
+		}
+	
+	case models.NotCondition:
+		if len(condition.Conditions) != 1 {
+			return fmt.Errorf("rule '%s' condition #%d (NOT) must have exactly one sub-condition", 
+				ruleName, conditionIndex+1)
+		}
+		
+		if err := validateCondition(condition.Conditions[0], ruleName, 0); err != nil {
+			return fmt.Errorf("in NOT condition: %w", err)
+		}
+	}
+	
+	return nil
+}
+
+
+func preprocessRules(ruleSet *models.RuleSet) {
+	for i := range ruleSet.Rules {
+		rule := &ruleSet.Rules[i]
+		
+		// Tylko dla reguł dotyczących ról
+		if rule.ResourceType == models.RoleResource {
+			for j := range rule.Conditions {
+				condition := &rule.Conditions[j]
+				
+				// Jeśli warunek dotyczy konkretnej polityki, zamień go na ALL_POLICIES
+				if condition.Type == models.PolicyDocumentCondition && 
+				   strings.HasPrefix(condition.DocumentPath, "Policies[") {
+					// Zapisz kryteria dopasowania
+					match := condition.Match
+					
+					// Zamień typ warunku na ALL_POLICIES
+					condition.Type = models.AllPoliciesCondition
+					condition.DocumentPath = "" // Nie potrzebne dla ALL_POLICIES
+					condition.Match = match     // Zachowaj kryteria dopasowania
+				}
+			}
+		}
+	}
 }
