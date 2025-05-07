@@ -1,57 +1,36 @@
 # Escalato
 
-Escalato is a Go-based tool for AWS IAM security auditing and management. It provides comprehensive visibility into IAM configurations and validates them against customizable security rules to identify potential vulnerabilities and misconfigurations.
+Escalato is a flexible, extensible Go-based tool for AWS IAM security auditing and management. It provides comprehensive visibility into IAM configurations and validates them against customizable security rules to identify potential vulnerabilities and misconfigurations.
+
+## Key Features
+
+- **Rule-Based Validation**: Define security rules in YAML with a flexible, expression-based syntax
+- **Plugin Architecture**: Easily extend with new rule types without changing the core code
+- **Confidence Levels**: Every security finding includes a confidence assessment
+- **IAM Resource Management**: View and manage roles, users, policies, and permissions
+- **Detailed Reporting**: Comprehensive violation reporting with context and evidence
+- **JSON Export**: Export validation results for integration with other tools
 
 ## Technical Overview
 
 ### Architecture
 
-Escalato is organized into several key packages:
+Escalato is organized with a clean, modular architecture:
 
-- `cmd/`: Command-line interface implementation using Cobra
-- `internal/aws/`: AWS API interaction and data collection
-- `internal/models/`: Data structures for AWS resources and validation rules
-- `internal/rules/`: Rules parsing and loading
-- `internal/validator/`: Security rule validation engine
+- **Resource Model**: Generic interfaces for AWS resources that decouples validation from specific resource types
+- **Rule Engine**: Flexible, expression-based rule evaluation engine
+- **Validator Registry**: Plugin-based system for registering condition validators
+- **Policy Analyzer**: Sophisticated IAM policy document analysis
 
-### Key Components
+### New Components
 
-#### AWS Client
+- **Expression Evaluator**: Evaluates complex logical expressions against resource properties
+- **Evaluation Context**: Collects and shares information during rule evaluation
+- **Condition Validators**: Pluggable validators for different types of security checks
 
-The AWS client (`internal/aws/client.go`) handles authentication and interaction with AWS API using the AWS SDK for Go v2. It supports:
-- AWS profile selection
-- Region configuration
-- Session management
-- Policy document caching
+## Using Escalato
 
-#### Rule Engine
-
-The rule engine (`internal/validator/validator.go` and `internal/validator/policy_analyzer.go`) processes IAM configurations against rule definitions. It features:
-- JSON policy document parsing and analysis
-- Permission pattern matching
-- Read vs. write action differentiation
-- Support for multiple rule types
-- Detailed violation reporting
-
-#### Data Models
-
-Key data models include:
-- `Role`: IAM role with policies, trust relationships, and usage data
-- `User`: IAM user with groups, policies, and access keys
-- `Rule`: Security rule definition with conditions and severity
-- `Condition`: Rule matching conditions for different resource types
-- `Violation`: Security finding with details and context
-
-## Prerequisites
-
-- Go 1.23.3 or higher
-- AWS SDK for Go v2
-- AWS CLI configured or valid AWS credentials
-- Required Go dependencies (see `go.mod`)
-
-## Installation
-
-### From Source
+### Installation
 
 ```bash
 # Clone the repository
@@ -68,57 +47,30 @@ go build -o escalato
 sudo mv escalato /usr/local/bin/
 ```
 
-### Via Go Install
+### Command Reference
 
-```bash
-go install github.com/yourusername/escalato@latest
-```
-
-## Command Reference
-
-### Global Flags
+#### Global Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--profile, -p` | AWS profile to use | Default profile |
 | `--region, -r` | AWS region | us-east-1 |
 
-### User Commands
+#### User & Role Commands
 
 ```bash
 # List all IAM users
 escalato users
 
-# List users with access keys
-escalato users --access-keys
-
-# List users with policies
-escalato users --policies
-
-# List users with group membership
-escalato users --groups
-
-# Show all user details
-escalato users --details
-```
-
-### Role Commands
-
-```bash
 # List all IAM roles
 escalato roles
 
-# Show role policies
-escalato roles --policies
-
-# Show trusted entities
-escalato roles --trusted
-
-# Show last activity
-escalato roles --last-activity
+# Show detailed information with various flags
+escalato users --details
+escalato roles --trusted --policies --last-activity
 ```
 
-### Validation Commands
+#### Validation Command
 
 ```bash
 # Run validation with default rules
@@ -127,6 +79,9 @@ escalato validate
 # Use custom rules file
 escalato validate --rules /path/to/rules.yml
 
+# Filter by confidence or severity
+escalato validate --min-confidence HIGH --min-severity MEDIUM
+
 # Export results to JSON
 escalato validate --output-json results.json
 
@@ -134,219 +89,201 @@ escalato validate --output-json results.json
 escalato validate --diagnostics
 ```
 
-## Rules Configuration Format
+## Defining Security Rules
 
-Escalato uses YAML for rule definitions. Each rule consists of:
+Escalato uses a flexible YAML format for defining rules. Each rule consists of:
 
 ```yaml
-- name: "Rule Name"
+- id: rule_id
+  name: "Rule Name"
   description: "Rule Description"
   severity: SEVERITY_LEVEL  # CRITICAL, HIGH, MEDIUM, LOW, INFO
-  type: RULE_TYPE  # ROLE_TRUST_POLICY, ROLE_PERMISSIONS, USER_PERMISSIONS, USER_ACCESS_KEY
-  condition:
-    # Condition parameters vary by rule type
+  resource_type: ResourceType  # Role, User
+  conditions:
+    - type: CONDITION_TYPE
+      # Condition-specific parameters
+  confidence_rules:
+    - level: CONFIDENCE_LEVEL  # HIGH, MEDIUM, LOW
+      when: "expression"
+    - level: LOW
+      default: true
 ```
 
-### Rule Types and Conditions
+### Condition Types
 
-#### ROLE_TRUST_POLICY
+The new rule engine supports multiple condition types:
 
-For validating IAM role trust policies:
+#### POLICY_DOCUMENT
+
+Validates IAM policy documents:
 
 ```yaml
-type: ROLE_TRUST_POLICY
-condition:
-  service: "string or [array]"  # AWS service to check
-  action: "string"             # IAM action to check
-  principal_wildcard: bool     # Whether to check for wildcard principals
-  aws_principal: bool          # Whether to check for AWS account principals
-  require_conditions: bool     # Whether to require Condition element
-  exclude_principals: [array]  # Principals to exclude from checks
+type: POLICY_DOCUMENT
+document_path: "TrustPolicy"  # or "Policies[0].Document"
+match:
+  statement_effect: "Allow"
+  action: "s3:*"
+  service: "s3"
+  has_condition: false
+  principal:
+    has_wildcard: true
 ```
 
-#### ROLE_PERMISSIONS and USER_PERMISSIONS
+#### RESOURCE_PROPERTY
 
-For validating IAM permissions:
+Checks resource properties:
 
 ```yaml
-type: ROLE_PERMISSIONS  # or USER_PERMISSIONS
-condition:
-  service: "string or [array]"  # AWS service(s) to check
-  action: "string"             # IAM action to check
-  managed_policy: "string"     # Specific managed policy to check
-  exclude_patterns: [array]    # Policy names/patterns to exclude
+type: RESOURCE_PROPERTY
+property_path: "Path"
+value: "/aws-service-role/"
 ```
 
-#### USER_ACCESS_KEY
+#### PATTERN_MATCH
 
-For validating IAM user access keys:
+Matches string patterns:
 
 ```yaml
-type: USER_ACCESS_KEY
-condition:
-  key_age: integer            # Maximum allowed age in days
-  key_status: "string"        # Status to check (Active, Inactive)
+type: PATTERN_MATCH
+property_path: "RoleName"
+pattern: "admin"
+options:
+  type: "contains"  # or "prefix", "suffix", "exact"
 ```
 
-## Code Structure
+#### AGE_CONDITION
 
-```
-escalato/
-├── cmd/
-│   ├── root.go           # Root command and global flags
-│   ├── roles.go          # IAM roles commands
-│   ├── users.go          # IAM users commands
-│   └── validate.go       # Validation commands
-├── example/
-│   └── escalato-rules.yml # Example rules
-├── internal/
-│   ├── aws/
-│   │   ├── client.go     # AWS client initialization
-│   │   ├── display.go    # Output formatting
-│   │   └── iam.go        # IAM API interactions
-│   ├── models/
-│   │   ├── role.go       # Role data structure
-│   │   ├── rule.go       # Rule data structures
-│   │   └── user.go       # User data structure
-│   ├── rules/
-│   │   └── loader.go     # YAML rule loading
-│   └── validator/
-│       ├── display.go    # Validation results display
-│       ├── policy_analyzer.go # Policy document analysis
-│       └── validator.go  # Main validation logic
-├── go.mod
-├── go.sum
-└── main.go
-```
-
-## AWS Policy Analysis
-
-The policy analyzer (`internal/validator/policy_analyzer.go`) implements advanced analysis:
-
-1. **Policy Document Parsing**: Parses and normalizes IAM policy JSON
-2. **Action Pattern Matching**: Detects exact and wildcard matches
-3. **Read vs. Write Detection**: Differentiates read-only actions from write/admin actions
-4. **Resource Wildcards**: Detects overly permissive resource specifications
-5. **Statement Evaluation**: Processes Effect, Action, Resource, and Condition elements
-
-### Read-Only Actions Detection
-
-Escalato automatically identifies read-only actions by their prefixes:
-- Get
-- List
-- Describe
-- View
-- Read
-- Check
-- Retrieve
-- Monitor
-
-### AWS Service Role Exclusion
-
-The validator (`internal/validator/validator.go`) automatically excludes AWS managed service roles:
-- Roles with paths containing `/aws-service-role/`
-- Roles with names starting with `AWSServiceRole`
-
-## Technical Details of Key Features
-
-### Multi-Service Rules
-
-The rule engine supports defining a single rule that applies to multiple AWS services:
+Checks time-based conditions:
 
 ```yaml
-condition:
-  service: ["lambda", "s3", "dynamodb", "rds", "ec2"]
-  action: "*"
+type: AGE_CONDITION
+property_path: "AccessKeys[0].CreateDate"
+threshold: 90  # days
 ```
 
-This is processed by the `getServicesFromCondition` function, which handles both string and array formats.
+#### Logical Operators
 
-### Cross-Account Access Detection
+Combine conditions with logical operators:
 
-Detects when a role can be assumed by another AWS account:
+```yaml
+type: AND  # or OR, NOT
+conditions:
+  - type: RESOURCE_PROPERTY
+    # ...
+  - type: POLICY_DOCUMENT
+    # ...
+```
+
+### Confidence Rules
+
+Define how confident the tool is in its findings:
+
+```yaml
+confidence_rules:
+  - level: HIGH
+    when: "has_wildcard_principal && !has_conditions"
+  - level: MEDIUM
+    when: "non_read_only_count > 5"
+  - level: LOW
+    default: true
+```
+
+## Examples
+
+Here are some examples of common security rules:
+
+### Wildcard in AssumeRole Trust Policy
+
+```yaml
+- id: wildcard_assume_role
+  name: "Wildcard in AssumeRole Trust Policy"
+  description: "Role has a trusted policy with sts:AssumeRole and wildcard principal"
+  severity: CRITICAL
+  resource_type: Role
+  conditions:
+    - type: POLICY_DOCUMENT
+      document_path: "TrustPolicy"
+      match:
+        statement_effect: "Allow"
+        action: "sts:AssumeRole"
+        principal:
+          has_wildcard: true
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_principal && !has_conditions"
+    - level: MEDIUM
+      when: "has_wildcard_principal && has_conditions"
+    - level: LOW
+      default: true
+```
+
+### Outdated Access Keys
+
+```yaml
+- id: outdated_access_key
+  name: "Outdated Access Key"
+  description: "User has access key older than 180 days"
+  severity: HIGH
+  resource_type: User
+  conditions:
+    - type: AGE_CONDITION
+      property_path: "AccessKeys[0].CreateDate"
+      threshold: 180
+  confidence_rules:
+    - level: HIGH
+      when: "ageInDays > 365"
+    - level: MEDIUM
+      when: "ageInDays > 270"
+    - level: LOW
+      default: true
+```
+
+## Extending Escalato
+
+### Adding New Resource Types
+
+1. Create a new struct that implements the `models.Resource` interface
+2. Update AWS client to fetch and populate the new resource type
+3. Register it in the validator
+
+### Adding New Condition Types
+
+1. Add a new constant in `models.ConditionType`
+2. Implement a new validator that implements the `validator.ConditionValidator` interface
+3. Register it in the validator registry
+
+### Creating Custom Expressions
+
+Use the expression evaluator to create custom expressions for confidence rules:
 
 ```go
-// Excerpt from validateRoleTrustPolicy
-if rule.Condition.AWSPrincipal {
-    // Checks Principal.AWS field for cross-account ARNs
-    // ...
-}
-```
-
-### AssumeRole Condition Checking
-
-Validates that `sts:AssumeRole` permissions have proper conditions:
-
-```go
-// Excerpt from validateRoleTrustPolicy
-if rule.Condition.RequireConditions && rule.Condition.Action == "sts:AssumeRole" {
-    if matchesAction && !hasConditions {
-        // Report violation
+// Register a custom function
+evaluator.RegisterFunction("isHighRiskService", func(args ...interface{}) (interface{}, error) {
+    if len(args) != 1 {
+        return nil, errors.New("isHighRiskService requires 1 argument")
     }
-}
+    
+    service, ok := args[0].(string)
+    if !ok {
+        return nil, errors.New("argument must be a string")
+    }
+    
+    highRiskServices := []string{"iam", "lambda", "ec2", "cloudformation", "s3"}
+    for _, s := range highRiskServices {
+        if service == s {
+            return true, nil
+        }
+    }
+    
+    return false, nil
+})
 ```
-
-### Non-Read-Only Actions Detection
-
-Analyzes policy for administrative actions:
-
-```go
-// Excerpt from analyzeStatements
-if !isReadOnlyAction(action) {
-    nonReadOnlyCount++
-    nonReadOnlyActions = append(nonReadOnlyActions, action)
-}
-
-// If significant non-read-only actions found
-if serviceMatches > 10 && nonReadOnlyCount >= 3 {
-    // Report violation
-}
-```
-
-## Error Handling
-
-Escalato implements comprehensive error handling:
-
-- AWS API errors are captured and reported with context
-- YAML parsing errors include line numbers and context
-- Policy document parsing errors provide detailed information
-- Runtime errors include descriptive messages
-
-## Extensions and Customization
-
-### Adding New Rule Types
-
-1. Add new constant in `internal/models/rule.go`:
-```go
-const (
-    // Existing types
-    NewRuleType RuleType = "NEW_RULE_TYPE"
-)
-```
-
-2. Add validation logic in `internal/rules/loader.go`
-3. Implement validation function in `internal/validator/validator.go`
-
-### Custom Output Formats
-
-Modify the `internal/validator/display.go` file to implement new output formats beyond the default console and JSON outputs.
 
 ## Performance Considerations
 
-- Policies are cached to minimize AWS API calls
+- Resource properties are accessed using reflection only when needed
+- Evaluation context caches intermediate results during rule evaluation
+- Policy documents are parsed only once
 - Multiple AWS resources are processed concurrently
 - Diagnostic logging can be enabled only when needed
-- Policy document parsing is optimized for large documents
 
-## Contributing
-
-Contributions are welcome! Please ensure:
-
-1. Code follows Go best practices
-2. Tests are included for new functionality
-3. Documentation is updated
-4. Pull requests include a description of changes
-
-## License
-
-[Add your license information here]

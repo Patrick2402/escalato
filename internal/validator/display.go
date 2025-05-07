@@ -1,57 +1,74 @@
 package validator
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"escalato/internal/models"
 )
 
-
-func DisplayResults(results *ValidationResults) {
+// DisplayResults formats and prints the validation results
+func DisplayResults(results *models.ValidationResults) {
 	fmt.Println("============================================")
 	fmt.Println("          ESCALATO VALIDATION RESULTS       ")
 	fmt.Println("============================================")
 	fmt.Println()
 
-	fmt.Printf("Total resources scanned: %d (Roles: %d, Users: %d)\n", 
-		results.Summary.TotalRoles + results.Summary.TotalUsers,
-		results.Summary.TotalRoles,
-		results.Summary.TotalUsers)
+	fmt.Printf("Total resources scanned: %d\n", results.Summary.TotalResources)
 	
-	fmt.Printf("Total violations found: %d\n", results.Summary.TotalViolations)
+	// Show breakdown of resources by type
+	for resType, count := range results.Summary.TotalResourcesByType {
+		fmt.Printf("  %s: %d\n", resType, count)
+	}
+	
+	fmt.Printf("\nTotal violations found: %d\n", results.Summary.TotalViolations)
 	fmt.Println()
 
+	// Setup colors for different severity levels
 	criticalColor := color.New(color.FgRed, color.Bold)
 	highColor := color.New(color.FgRed)
 	mediumColor := color.New(color.FgYellow)
 	lowColor := color.New(color.FgCyan)
 	infoColor := color.New(color.FgBlue)
 
-	criticalColor.Printf("CRITICAL: %d violations\n", results.Summary.CriticalViolations)
-	highColor.Printf("HIGH: %d violations\n", results.Summary.HighViolations)
-	mediumColor.Printf("MEDIUM: %d violations\n", results.Summary.MediumViolations)
-	lowColor.Printf("LOW: %d violations\n", results.Summary.LowViolations)
-	infoColor.Printf("INFO: %d violations\n", results.Summary.InfoViolations)
+	// Print severity breakdown
+	criticalColor.Printf("CRITICAL: %d violations\n", 
+		results.Summary.ViolationsBySeverity[models.Critical])
+	highColor.Printf("HIGH: %d violations\n", 
+		results.Summary.ViolationsBySeverity[models.High])
+	mediumColor.Printf("MEDIUM: %d violations\n", 
+		results.Summary.ViolationsBySeverity[models.Medium])
+	lowColor.Printf("LOW: %d violations\n", 
+		results.Summary.ViolationsBySeverity[models.Low])
+	infoColor.Printf("INFO: %d violations\n", 
+		results.Summary.ViolationsBySeverity[models.Info])
 	fmt.Println()
 	
-	// Display confidence level summary
+	// Print confidence level breakdown
 	highConfColor := color.New(color.FgRed, color.Bold)
 	medConfColor := color.New(color.FgYellow)
 	lowConfColor := color.New(color.FgCyan)
 	
 	fmt.Println("Confidence Level Breakdown:")
-	highConfColor.Printf("HIGH CONFIDENCE: %d violations\n", results.Summary.HighConfidenceViolations)
-	medConfColor.Printf("MEDIUM CONFIDENCE: %d violations\n", results.Summary.MediumConfidenceViolations)
-	lowConfColor.Printf("LOW CONFIDENCE: %d violations\n", results.Summary.LowConfidenceViolations)
+	highConfColor.Printf("HIGH CONFIDENCE: %d violations\n", 
+		results.Summary.ViolationsByConfidence[models.HighConfidence])
+	medConfColor.Printf("MEDIUM CONFIDENCE: %d violations\n", 
+		results.Summary.ViolationsByConfidence[models.MediumConfidence])
+	lowConfColor.Printf("LOW CONFIDENCE: %d violations\n", 
+		results.Summary.ViolationsByConfidence[models.LowConfidence])
 	fmt.Println()
 
+	// If no violations, show a success message
 	if results.Summary.TotalViolations == 0 {
 		color.Green("✅ No violations found. All resources comply with the defined rules.")
 		return
 	}
 
+	// Display violations by severity
 	displayViolationsByLevel(results.Violations, models.Critical, criticalColor)
 	displayViolationsByLevel(results.Violations, models.High, highColor)
 	displayViolationsByLevel(results.Violations, models.Medium, mediumColor)
@@ -59,7 +76,7 @@ func DisplayResults(results *ValidationResults) {
 	displayViolationsByLevel(results.Violations, models.Info, infoColor)
 }
 
-
+// displayViolationsByLevel shows violations of a specific severity level
 func displayViolationsByLevel(violations []models.Violation, level models.Severity, colorizer *color.Color) {
 	levelViolations := filterViolationsByLevel(violations, level)
 	if len(levelViolations) == 0 {
@@ -77,11 +94,37 @@ func displayViolationsByLevel(violations []models.Violation, level models.Severi
 		displayConfidence(violation.Confidence)
 		
 		fmt.Printf("   Details: %s\n", violation.Details)
+		fmt.Printf("   Detected: %s\n", 
+			violation.Timestamp.Format(time.RFC3339))
+		
+		// Show additional context if available
+		if len(violation.Context) > 0 {
+			fmt.Println("   Context:")
+			for k, v := range violation.Context {
+				// Skip internal context variables
+				if strings.HasPrefix(k, "_") {
+					continue
+				}
+				
+				// Skip long arrays and objects
+				switch val := v.(type) {
+				case []string:
+					if len(val) > 3 {
+						fmt.Printf("     %s: [%s, ... (%d more)]\n", 
+							k, strings.Join(val[:3], ", "), len(val)-3)
+						continue
+					}
+				}
+				
+				fmt.Printf("     %s: %v\n", k, v)
+			}
+		}
+		
 		fmt.Println()
 	}
 }
 
-// Helper function to display confidence with color
+// displayConfidence shows the confidence level with appropriate color
 func displayConfidence(confidence models.Confidence) {
 	var confColor *color.Color
 	
@@ -101,6 +144,7 @@ func displayConfidence(confidence models.Confidence) {
 	confColor.Printf("   Confidence: %s\n", confidence)
 }
 
+// filterViolationsByLevel returns violations of a specific severity
 func filterViolationsByLevel(violations []models.Violation, level models.Severity) []models.Violation {
 	var filtered []models.Violation
 	for _, v := range violations {
@@ -111,13 +155,12 @@ func filterViolationsByLevel(violations []models.Violation, level models.Severit
 	return filtered
 }
 
-func TruncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+// ExportToJSON exports validation results to a JSON file
+func ExportToJSON(results *models.ValidationResults, outputPath string) error {
+	data, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling results to JSON: %w", err)
 	}
-	return s[:maxLen-3] + "..."
-}
-
-func Indent(s string, indent string) string {
-	return indent + strings.Replace(s, "\n", "\n"+indent, -1)
+	
+	return os.WriteFile(outputPath, data, 0644)
 }

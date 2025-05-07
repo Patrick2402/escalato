@@ -3,6 +3,7 @@ package models
 type Severity string
 type RuleType string
 type Confidence string
+type ConditionType string
 
 const (
 	Critical Severity = "CRITICAL"
@@ -21,42 +22,49 @@ const (
 	MediumConfidence Confidence = "MEDIUM"
 	LowConfidence    Confidence = "LOW"
 	InfoConfidence   Confidence = "INFO"
+	
+	// Condition types
+	PolicyDocumentCondition   ConditionType = "POLICY_DOCUMENT"
+	ResourcePropertyCondition ConditionType = "RESOURCE_PROPERTY"
+	PatternMatchCondition     ConditionType = "PATTERN_MATCH"
+	AgeCondition              ConditionType = "AGE_CONDITION"
+	AndCondition              ConditionType = "AND"
+	OrCondition               ConditionType = "OR"
+	NotCondition              ConditionType = "NOT"
+	AllPoliciesCondition      ConditionType = "ALL_POLICIES" 
 )
 
 type Rule struct {
-	Name        string      `yaml:"name"`
-	Description string      `yaml:"description"`
-	Severity    Severity    `yaml:"severity"`
-	Type        RuleType    `yaml:"type"`
-	Condition   Condition   `yaml:"condition"`
+	ID              string           `yaml:"id"`
+	Name            string           `yaml:"name"`
+	Description     string           `yaml:"description"`
+	Severity        Severity         `yaml:"severity"`
+	ResourceType    ResourceType     `yaml:"resource_type"`
+	Conditions      []Condition      `yaml:"conditions"`
+	ConfidenceRules []ConfidenceRule `yaml:"confidence_rules,omitempty"`
+	Tags            []string         `yaml:"tags,omitempty"`
+	References      []string         `yaml:"references,omitempty"`
 }
 
 type Condition struct {
-	Service           interface{} `yaml:"service,omitempty"`       // Can be string or []string
-	Action            string      `yaml:"action,omitempty"`
-	Resource          string      `yaml:"resource,omitempty"`
-	PrincipalWildcard bool        `yaml:"principal_wildcard,omitempty"`
-	RequireConditions bool        `yaml:"require_conditions,omitempty"`
-	ExcludePrincipals []string    `yaml:"exclude_principals,omitempty"`
-	AWSPrincipal      bool        `yaml:"aws_principal,omitempty"` 
-	Effect            string      `yaml:"effect,omitempty"`
-	KeyAge            int         `yaml:"key_age,omitempty"`
-	KeyStatus         string      `yaml:"key_status,omitempty"`
-	ManagedPolicy     string      `yaml:"managed_policy,omitempty"`
-	ExcludePatterns   []string    `yaml:"exclude_patterns,omitempty"`
+	Type            ConditionType            `yaml:"type"`
+	DocumentPath    string                   `yaml:"document_path,omitempty"`
+	PropertyPath    string                   `yaml:"property_path,omitempty"`
+	Value           interface{}              `yaml:"value,omitempty"`
+	Pattern         string                   `yaml:"pattern,omitempty"`
+	Threshold       int                      `yaml:"threshold,omitempty"`
+	Match           map[string]interface{}   `yaml:"match,omitempty"`
+	Conditions      []Condition              `yaml:"conditions,omitempty"`
+	ExpressionValue string                   `yaml:"expression,omitempty"`
+	Options         map[string]interface{}   `yaml:"options,omitempty"`
+}
+
+type ConfidenceRule struct {
+	Level   Confidence `yaml:"level"`
+	When    string     `yaml:"when,omitempty"`
+	Default bool       `yaml:"default,omitempty"`
 }
 
 type RuleSet struct {
 	Rules []Rule `yaml:"rules"`
-}
-
-type Violation struct {
-	RuleName     string     `json:"rule_name"`
-	Description  string     `json:"description"`
-	Severity     Severity   `json:"severity"`
-	Confidence   Confidence `json:"confidence"`  // New field for confidence level
-	ResourceName string     `json:"resource_name"`
-	ResourceType string     `json:"resource_type"`
-	ResourceARN  string     `json:"resource_arn"`
-	Details      string     `json:"details,omitempty"`
 }

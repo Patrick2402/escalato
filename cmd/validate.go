@@ -2,24 +2,25 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/spf13/cobra"
+	
 	"escalato/internal/aws"
 	"escalato/internal/models"
 	"escalato/internal/rules"
 	"escalato/internal/validator"
-
-	"github.com/spf13/cobra"
 )
 
 var (
 	rulesFile          string
 	outputJson         string
 	enableDiagnostics  bool
-	minConfidenceLevel string // Minimum confidence level to display
-	minSeverityLevel   string // Minimum severity level to display
+	minConfidenceLevel string
+	minSeverityLevel   string
+	skipAwsRoles       bool
 )
 
 var validateCmd = &cobra.Command{
@@ -30,13 +31,12 @@ var validateCmd = &cobra.Command{
 		profile, _ := cmd.Flags().GetString("profile")
 		region, _ := cmd.Flags().GetString("region")
 
-		// Enable diagnostics
+		// Enable diagnostics if requested
 		if enableDiagnostics {
-			aws.EnableDiagnostics = true
-			validator.EnableDiagnostics = true
 			fmt.Println("Diagnostic mode enabled. Detailed logs will be written to stderr.")
 		}
 
+		// Create AWS client
 		client, err := aws.NewClient(context.Background(), profile, region)
 		if err != nil {
 			er(fmt.Sprintf("Could not create AWS client: %v", err))
@@ -48,53 +48,82 @@ var validateCmd = &cobra.Command{
 			er(fmt.Sprintf("Error loading rules: %v", err))
 		}
 
-		if enableDiagnostics {
-			fmt.Fprintf(os.Stderr, "[DIAG] Loaded %d rules from %s\n", len(ruleSet.Rules), rulesFile)
-		}
+		fmt.Printf("Loaded %d rules from %s\n", len(ruleSet.Rules), rulesFile)
 
-		// Get IAM data
+		// Fetch IAM data
 		fmt.Println("Fetching IAM roles...")
-		roles, err := aws.GetIAMRoles(context.Background(), client.IAMClient, true, true, true)
+		awsRoles, err := aws.GetIAMRoles(context.Background(), client.IAMClient, true, true, true)
 		if err != nil {
 			er(fmt.Sprintf("Error fetching IAM roles: %v", err))
 		}
 
 		fmt.Println("Fetching IAM users...")
-		users, err := aws.GetIAMUsers(context.Background(), client.IAMClient, true, true, true, true)
+		awsUsers, err := aws.GetIAMUsers(context.Background(), client.IAMClient, true, true, true, true)
 		if err != nil {
 			er(fmt.Sprintf("Error fetching IAM users: %v", err))
 		}
 
-		fmt.Printf("Retrieved %d roles and %d users\n", len(roles), len(users))
+		fmt.Printf("Retrieved %d roles and %d users\n", len(awsRoles), len(awsUsers))
 
+		// Fetch policy documents
 		fmt.Println("Fetching managed policy documents...")
-
-		for i := range roles {
-			if err := client.UpdateRolePoliciesWithDocuments(context.Background(), &roles[i]); err != nil {
+		for i := range awsRoles {
+			if err := client.UpdateRolePoliciesWithDocuments(context.Background(), &awsRoles[i]); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error fetching managed policies for role %s: %v\n",
-					roles[i].RoleName, err)
+					awsRoles[i].RoleName, err)
 			}
 		}
 
-		for i := range users {
-			if err := client.UpdateUserPoliciesWithDocuments(context.Background(), &users[i]); err != nil {
+		for i := range awsUsers {
+			if err := client.UpdateUserPoliciesWithDocuments(context.Background(), &awsUsers[i]); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error fetching managed policies for user %s: %v\n",
-					users[i].UserName, err)
+					awsUsers[i].UserName, err)
 			}
 		}
+
+		// Convert AWS resources to generic resources
+		var resources []models.Resource
+		skippedRoles := 0
+		for i := range awsRoles {
+			// Skip AWS managed roles if the flag is set
+			if skipAwsRoles && isAWSManagedRole(awsRoles[i].RoleName, awsRoles[i].Path) {
+				if enableDiagnostics {
+					fmt.Printf("Skipping AWS managed role: %s\n", awsRoles[i].RoleName)
+				}
+				skippedRoles++
+				continue
+			}
+			resources = append(resources, &awsRoles[i])
+		}
+		
+		if skippedRoles > 0 {
+			fmt.Printf("Skipped %d AWS managed roles\n", skippedRoles)
+		}
+		
+		for i := range awsUsers {
+			resources = append(resources, &awsUsers[i])
+		}
+
+		// Create validator registry and rule engine
+		validatorRegistry := rules.NewValidatorRegistry(enableDiagnostics)
+		
+		// Register all validators
+		registerValidators(validatorRegistry, enableDiagnostics)
+		
+		ruleEngine := rules.NewRuleEngine(validatorRegistry, enableDiagnostics)
 
 		// Run validation
 		fmt.Println("Running validation...")
-		validationResults, err := validator.ValidateAll(ruleSet, roles, users)
+		validationResults, err := ruleEngine.ValidateAll(ruleSet, resources)
 		if err != nil {
 			er(fmt.Sprintf("Error during validation: %v", err))
 		}
 
 		// Filter results by confidence and severity if specified
-		if minConfidenceLevel != "" || minSeverityLevel != "" {
-			filteredResults := filterResults(validationResults, minSeverityLevel, minConfidenceLevel)
-			validationResults = filteredResults
+		filteredResults := filterResults(validationResults, minSeverityLevel, minConfidenceLevel)
 
+		// Display filtering info if any filters were applied
+		if minConfidenceLevel != "" || minSeverityLevel != "" {
 			if minConfidenceLevel != "" && minSeverityLevel != "" {
 				fmt.Printf("Filtered results to minimum severity: %s and minimum confidence: %s\n",
 					minSeverityLevel, minConfidenceLevel)
@@ -106,13 +135,12 @@ var validateCmd = &cobra.Command{
 		}
 
 		// Display results in console
-		validator.DisplayResults(validationResults)
+		validator.DisplayResults(filteredResults)
 
-		// Export to JSON
+		// Export to JSON if requested
 		if outputJson != "" {
 			fmt.Printf("Exporting results to %s...\n", outputJson)
-			err := exportToJson(validationResults, outputJson)
-			if err != nil {
+			if err := validator.ExportToJSON(filteredResults, outputJson); err != nil {
 				er(fmt.Sprintf("Failed to export results to JSON: %v", err))
 			}
 			fmt.Printf("Results exported to %s\n", outputJson)
@@ -120,122 +148,155 @@ var validateCmd = &cobra.Command{
 	},
 }
 
-// Filter results by confidence and severity
-func filterResults(results *validator.ValidationResults, minSeverity, minConfidence string) *validator.ValidationResults {
+// isAWSManagedRole sprawdza, czy rola jest rolą zarządzaną przez AWS
+func isAWSManagedRole(roleName, rolePath string) bool {
+	// Sprawdź ścieżkę zawierającą aws-service-role
+	if strings.Contains(rolePath, "/aws-service-role/") {
+		return true
+	}
+	
+	// Sprawdź prefiks roli
+	if strings.HasPrefix(roleName, "AWSServiceRole") {
+		return true
+	}
+	
+	// Sprawdź prefiks AWS
+	if strings.HasPrefix(roleName, "AWS") {
+		return true
+	}
+	
+	// Inne typowe role AWS
+	awsRoles := []string{
+		"OrganizationAccountAccessRole",
+		"admin",
+		"administrator",
+		"ec2-instance-connect",
+		"ecsTaskExecutionRole",
+		"rds-monitoring-role",
+	}
+	
+	for _, role := range awsRoles {
+		if strings.EqualFold(roleName, role) {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// registerValidators rejestruje wszystkie walidatory w rejestrze
+// W funkcji registerValidators dodaj:
+func registerValidators(registry *rules.ValidatorRegistry, diagnostics bool) {
+	// Logiczne walidatory
+	registry.RegisterValidator(models.AndCondition, 
+		validator.NewAndValidator(registry, diagnostics))
+	registry.RegisterValidator(models.OrCondition, 
+		validator.NewOrValidator(registry, diagnostics))
+	registry.RegisterValidator(models.NotCondition, 
+		validator.NewNotValidator(registry, diagnostics))
+	
+	// Walidatory zasobów
+	registry.RegisterValidator(models.ResourcePropertyCondition, 
+		validator.NewResourcePropertyValidator(diagnostics))
+	registry.RegisterValidator(models.PatternMatchCondition, 
+		validator.NewPatternMatchValidator(diagnostics))
+	
+	// Walidatory policy
+	registry.RegisterValidator(models.PolicyDocumentCondition, 
+		validator.NewPolicyDocumentValidator(diagnostics))
+	
+	// Walidator wszystkich polityk
+	registry.RegisterValidator(models.AllPoliciesCondition, 
+		validator.NewAllPoliciesValidator(diagnostics))
+	
+	// Walidatory czasowe
+	registry.RegisterValidator(models.AgeCondition, 
+		validator.NewAgeValidator(diagnostics))
+}
+
+// filterResults filters validation results by confidence and severity
+func filterResults(results *models.ValidationResults, minSeverity, minConfidence string) *models.ValidationResults {
 	if minSeverity == "" && minConfidence == "" {
-		return results
+		return results // No filtering needed
 	}
 
-	var filteredViolations []models.Violation
+	filteredResults := models.NewValidationResults()
+	filteredResults.Summary.TotalResources = results.Summary.TotalResources
+	filteredResults.Summary.TotalResourcesByType = results.Summary.TotalResourcesByType
 
+	// Copy the resource counts
+	for resourceType, count := range results.Summary.TotalResourcesByType {
+		filteredResults.Summary.TotalResourcesByType[resourceType] = count
+	}
+
+	// Define the minimum severity level
+	var minSeverityLevel models.Severity
+	switch minSeverity {
+	case "CRITICAL":
+		minSeverityLevel = models.Critical
+	case "HIGH":
+		minSeverityLevel = models.High
+	case "MEDIUM":
+		minSeverityLevel = models.Medium
+	case "LOW":
+		minSeverityLevel = models.Low
+	case "INFO":
+		minSeverityLevel = models.Info
+	default:
+		minSeverityLevel = ""
+	}
+
+	// Define the minimum confidence level
+	var minConfidenceLevel models.Confidence
+	switch minConfidence {
+	case "HIGH":
+		minConfidenceLevel = models.HighConfidence
+	case "MEDIUM":
+		minConfidenceLevel = models.MediumConfidence
+	case "LOW":
+		minConfidenceLevel = models.LowConfidence
+	case "INFO":
+		minConfidenceLevel = models.InfoConfidence
+	default:
+		minConfidenceLevel = ""
+	}
+
+	// Filter violations
 	for _, violation := range results.Violations {
-		includeViolation := true
+		includeSeverity := minSeverityLevel == "" || isSeverityAtLeast(violation.Severity, minSeverityLevel)
+		includeConfidence := minConfidenceLevel == "" || isConfidenceAtLeast(violation.Confidence, minConfidenceLevel)
 
-		// Check severity filter
-		if minSeverity != "" {
-			severityPass := false
-			switch minSeverity {
-			case "CRITICAL":
-				severityPass = violation.Severity == models.Critical
-			case "HIGH":
-				severityPass = violation.Severity == models.Critical ||
-					violation.Severity == models.High
-			case "MEDIUM":
-				severityPass = violation.Severity == models.Critical ||
-					violation.Severity == models.High ||
-					violation.Severity == models.Medium
-			case "LOW":
-				severityPass = violation.Severity == models.Critical ||
-					violation.Severity == models.High ||
-					violation.Severity == models.Medium ||
-					violation.Severity == models.Low
-			case "INFO":
-				severityPass = true // All severities pass
-			default:
-				severityPass = true // Invalid severity filter, include all
-			}
-
-			if !severityPass {
-				includeViolation = false
-			}
-		}
-
-		// Check confidence filter
-		if minConfidence != "" && includeViolation {
-			confidencePass := false
-			switch minConfidence {
-			case "HIGH":
-				confidencePass = violation.Confidence == models.HighConfidence
-			case "MEDIUM":
-				confidencePass = violation.Confidence == models.HighConfidence ||
-					violation.Confidence == models.MediumConfidence
-			case "LOW":
-				confidencePass = violation.Confidence == models.HighConfidence ||
-					violation.Confidence == models.MediumConfidence ||
-					violation.Confidence == models.LowConfidence
-			case "INFO":
-				confidencePass = true // All confidences pass
-			default:
-				confidencePass = true // Invalid confidence filter, include all
-			}
-
-			if !confidencePass {
-				includeViolation = false
-			}
-		}
-
-		if includeViolation {
-			filteredViolations = append(filteredViolations, violation)
-		}
-	}
-
-	// Create new results with filtered violations
-	filteredResults := &validator.ValidationResults{
-		Summary: validator.ValidationSummary{
-			TotalRoles:      results.Summary.TotalRoles,
-			TotalUsers:      results.Summary.TotalUsers,
-			TotalViolations: len(filteredViolations),
-		},
-		Violations: filteredViolations,
-	}
-
-	// Recalculate summary counts
-	for _, violation := range filteredViolations {
-		switch violation.Severity {
-		case models.Critical:
-			filteredResults.Summary.CriticalViolations++
-		case models.High:
-			filteredResults.Summary.HighViolations++
-		case models.Medium:
-			filteredResults.Summary.MediumViolations++
-		case models.Low:
-			filteredResults.Summary.LowViolations++
-		case models.Info:
-			filteredResults.Summary.InfoViolations++
-		}
-
-		switch violation.Confidence {
-		case models.HighConfidence:
-			filteredResults.Summary.HighConfidenceViolations++
-		case models.MediumConfidence:
-			filteredResults.Summary.MediumConfidenceViolations++
-		case models.LowConfidence:
-			filteredResults.Summary.LowConfidenceViolations++
-		case models.InfoConfidence:
-			filteredResults.Summary.InfoConfidenceViolations++
+		if includeSeverity && includeConfidence {
+			filteredResults.AddViolation(violation)
 		}
 	}
 
 	return filteredResults
 }
 
-func exportToJson(results *validator.ValidationResults, outputPath string) error {
-	jsonData, err := json.MarshalIndent(results, "", "  ")
-	if err != nil {
-		return err
+// isSeverityAtLeast checks if a severity is at least a minimum level
+func isSeverityAtLeast(severity, minLevel models.Severity) bool {
+	severityOrder := map[models.Severity]int{
+		models.Critical: 5,
+		models.High:     4,
+		models.Medium:   3,
+		models.Low:      2,
+		models.Info:     1,
 	}
 
-	return os.WriteFile(outputPath, jsonData, 0644)
+	return severityOrder[severity] >= severityOrder[minLevel]
+}
+
+// isConfidenceAtLeast checks if a confidence is at least a minimum level
+func isConfidenceAtLeast(confidence, minLevel models.Confidence) bool {
+	confidenceOrder := map[models.Confidence]int{
+		models.HighConfidence:   4,
+		models.MediumConfidence: 3,
+		models.LowConfidence:    2,
+		models.InfoConfidence:   1,
+	}
+
+	return confidenceOrder[confidence] >= confidenceOrder[minLevel]
 }
 
 func init() {
@@ -246,4 +307,5 @@ func init() {
 	validateCmd.Flags().BoolVar(&enableDiagnostics, "diagnostics", false, "Enable diagnostic output for debugging")
 	validateCmd.Flags().StringVar(&minConfidenceLevel, "min-confidence", "", "Minimum confidence level to display (HIGH, MEDIUM, LOW, INFO)")
 	validateCmd.Flags().StringVar(&minSeverityLevel, "min-severity", "", "Minimum severity level to display (CRITICAL, HIGH, MEDIUM, LOW, INFO)")
+	validateCmd.Flags().BoolVar(&skipAwsRoles, "skip-aws-roles", true, "Skip AWS managed roles during validation")
 }
