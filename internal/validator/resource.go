@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -138,6 +139,20 @@ func (v *PatternMatchValidator) Validate(condition models.Condition, ctx *rules.
 		matched = strValue == condition.Pattern
 		if v.diagnostics {
 			log.Printf("[VALIDATOR] Checking exact match '%s' == '%s': %v", 
+				condition.Pattern, strValue, matched)
+		}
+	case "regex":
+		re, err := regexp.Compile(condition.Pattern)
+		if err != nil {
+			if v.diagnostics {
+				log.Printf("[VALIDATOR] Invalid regex pattern '%s': %v", 
+					condition.Pattern, err)
+			}
+			return false, fmt.Errorf("invalid regex pattern '%s': %w", condition.Pattern, err)
+		}
+		matched = re.MatchString(strValue)
+		if v.diagnostics {
+			log.Printf("[VALIDATOR] Checking regex '%s' against '%s': %v", 
 				condition.Pattern, strValue, matched)
 		}
 	default:
