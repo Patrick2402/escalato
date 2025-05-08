@@ -1,8 +1,12 @@
+/*
+ This file has implementation of the main banner for the tool. It is used in cmd/root.go
+*/
 package utils
 
 import (
 	"fmt"
 	"strings"
+	"github.com/fatih/color"
 )
 
 
@@ -18,7 +22,7 @@ _____               _       _
 
 
 func DisplayBanner(){
-	fmt.Println(strings.TrimSpace(bannerArt))
+	color.Magenta(strings.TrimSpace(bannerArt))
 	fmt.Println()
 	fmt.Println("IAM Security Auditing Tool by Patryk Zawieja")
 	fmt.Println("--------------------------------------------")

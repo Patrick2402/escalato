@@ -3,6 +3,7 @@ package validator
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"escalato/internal/models"
@@ -281,11 +282,95 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		actions := utils.GetActionsFromStatement(stmt)
 
 		for _, action := range actions {
-			// Only match exactly the action specified or global wildcard
-			v.logDebug("Checking action: %s against criteria: %s", action, actionCriteria)
+			// Direct match or global wildcard
 			if action == actionCriteria || action == "*" {
 				actionMatch = true
 				break
+			}
+
+			// Check if policy action has AWS wildcard
+			if strings.Contains(action, "*") {
+				if utils.IsActionMatchingAwsPattern(actionCriteria, action) {
+					actionMatch = true
+					break
+				}
+			}
+		}
+
+		if !actionMatch {
+			return false
+		}
+	}
+
+	// Check Action with regex (new feature)
+	if actionRegexCriteria, ok := criteria["action_regex"].(string); ok && actionRegexCriteria != "" {
+		actionMatch := false
+		actions := utils.GetActionsFromStatement(stmt)
+
+		re, err := regexp.Compile(actionRegexCriteria)
+		if err == nil {
+			for _, action := range actions {
+				// Handle global wildcard
+				if action == "*" {
+					actionMatch = true
+					break
+				}
+
+				// Handle AWS-style wildcards
+				if strings.Contains(action, "*") {
+					// Convert AWS wildcard to regex pattern
+					awsPattern := "^" + strings.Replace(action, "*", ".*", -1) + "$"
+					targetActionRe, err := regexp.Compile(awsPattern)
+					
+					// Check if this AWS wildcard pattern would include any actions
+					// that match our regex criteria
+					if err == nil {
+						// Try to find a potential match by checking if there's any overlap
+						// between the pattern territories
+						testActions := []string{
+							strings.Replace(actionRegexCriteria, "\\(", "", -1),
+							strings.Replace(actionRegexCriteria, "\\)", "", -1),
+							strings.Replace(actionRegexCriteria, ".*", "TEST", -1),
+							strings.Replace(actionRegexCriteria, "[^:]*", "TEST", -1),
+							strings.Replace(actionRegexCriteria, "(.*)", "TEST", -1),
+						}
+						
+						for _, testAction := range testActions {
+							// Simplify test action if it's a regex
+							testAction = strings.TrimPrefix(testAction, "^")
+							testAction = strings.TrimSuffix(testAction, "$")
+							testAction = strings.Replace(testAction, "\\", "", -1)
+							
+							// Check service part for service:* patterns
+							if strings.HasSuffix(action, ":*") {
+								actionService := strings.TrimSuffix(action, ":*")
+								
+								// Extract service from test action
+								testParts := strings.Split(testAction, ":")
+								if len(testParts) > 0 && testParts[0] == actionService {
+									actionMatch = true
+									break
+								}
+							}
+
+							// Attempt to match with the AWS pattern
+							if targetActionRe.MatchString(testAction) {
+								actionMatch = true
+								break
+							}
+						}
+						
+						if actionMatch {
+							break
+						}
+					}
+				}
+
+				// Try direct regex match
+				if re.MatchString(action) {
+					actionMatch = true
+					break
+				}
 			}
 		}
 
@@ -349,9 +434,78 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		resources := utils.GetResourcesFromStatement(stmt)
 
 		for _, resource := range resources {
+			// Direct match or global wildcard
 			if resource == resourceCriteria || resource == "*" {
 				resourceMatch = true
 				break
+			}
+
+			// Check if policy resource has AWS wildcard
+			if strings.Contains(resource, "*") {
+				if utils.IsResourceMatchingAwsPattern(resourceCriteria, resource) {
+					resourceMatch = true
+					break
+				}
+			}
+		}
+
+		if !resourceMatch {
+			return false
+		}
+	}
+
+	// Check Resource with regex (new feature)
+	if resourceRegexCriteria, ok := criteria["resource_regex"].(string); ok && resourceRegexCriteria != "" {
+		resourceMatch := false
+		resources := utils.GetResourcesFromStatement(stmt)
+
+		re, err := regexp.Compile(resourceRegexCriteria)
+		if err == nil {
+			for _, resource := range resources {
+				if resource == "*" {
+					resourceMatch = true
+					break
+				}
+
+				// Handle AWS-style wildcards
+				if strings.Contains(resource, "*") {
+					// Same approach as for actions
+					awsPattern := "^" + strings.Replace(resource, "*", ".*", -1) + "$"
+					targetResourceRe, err := regexp.Compile(awsPattern)
+					
+					if err == nil {
+						// Check for potential overlap between patterns
+						testResources := []string{
+							strings.Replace(resourceRegexCriteria, "\\(", "", -1),
+							strings.Replace(resourceRegexCriteria, "\\)", "", -1),
+							strings.Replace(resourceRegexCriteria, ".*", "TEST", -1),
+							strings.Replace(resourceRegexCriteria, "(.*)", "TEST", -1),
+						}
+						
+						for _, testResource := range testResources {
+							// Simplify test resource if it's a regex
+							testResource = strings.TrimPrefix(testResource, "^")
+							testResource = strings.TrimSuffix(testResource, "$")
+							testResource = strings.Replace(testResource, "\\", "", -1)
+							
+							// Attempt to match with the AWS pattern
+							if targetResourceRe.MatchString(testResource) {
+								resourceMatch = true
+								break
+							}
+						}
+						
+						if resourceMatch {
+							break
+						}
+					}
+				}
+
+				// Try direct regex match
+				if re.MatchString(resource) {
+					resourceMatch = true
+					break
+				}
 			}
 		}
 
@@ -371,19 +525,16 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 	return true
 }
 
-// AllPoliciesValidator sprawdza wszystkie polityki zasobu
 type AllPoliciesValidator struct {
 	*BaseValidator
 }
 
-// NewAllPoliciesValidator tworzy nowy walidator wszystkich polityk
 func NewAllPoliciesValidator(diagnostics bool) ConditionValidator {
 	return &AllPoliciesValidator{
 		BaseValidator: NewBaseValidator(diagnostics),
 	}
 }
 
-// Validate sprawdza wszystkie polityki zasobu
 func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.EvaluationContext) (bool, error) {
 	v.logDebug("Starting validation for resource %s with ALL_POLICIES", ctx.Resource.GetName())
 
@@ -394,7 +545,6 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 	}
 	v.logDebug("Policies type: %T", policiesValue)
 
-	// Konwertuj na slice polityk
 	policies, ok := policiesValue.([]models.Policy)
 	if !ok {
 		v.logDebug("policies is not a slice of Policy: %T", policiesValue)
@@ -403,14 +553,11 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 
 	v.logDebug("Checking %d policies for resource %s", len(policies), ctx.Resource.GetName())
 
-	// Przygotuj walidator dokumentów polityk
 	policyValidator := &PolicyDocumentValidator{
 		BaseValidator: NewBaseValidator(v.diagnostics),
 	}
 
-	// Sprawdź każdą politykę
 	for i, policy := range policies {
-		// Utwórz tymczasowy warunek dla każdej polityki
 		v.logDebug("Policy %d: %s, Document length: %d", i, policy.Name, len(policy.Document))
 
 		policyCondition := models.Condition{
@@ -419,14 +566,12 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 			Match:        condition.Match,
 		}
 
-		// Sprawdź politykę
 		matched, err := policyValidator.Validate(policyCondition, ctx)
 		if err != nil {
 			v.logDebug("Error validating policy %d: %v", i, err)
 			continue
 		}
 
-		// Jeśli którakolwiek polityka pasuje, reguła jest naruszona
 		if matched {
 			v.logDebug("Policy %d matched for resource %s", i, ctx.Resource.GetName())
 			return true, nil

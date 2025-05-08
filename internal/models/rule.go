@@ -12,27 +12,27 @@ const (
 	Low      Severity = "LOW"
 	Info     Severity = "INFO"
 
-	RoleTrustPolicy  RuleType = "ROLE_TRUST_POLICY"
-	RolePermissions  RuleType = "ROLE_PERMISSIONS"
-	UserPermissions  RuleType = "USER_PERMISSIONS"
-	UserAccessKey    RuleType = "USER_ACCESS_KEY"
+	RoleTrustPolicy  RuleType = "ROLE_TRUST_POLICY" // trust policy of a role
+	RolePermissions  RuleType = "ROLE_PERMISSIONS" // permissions of a role
+	UserPermissions  RuleType = "USER_PERMISSIONS" // permissions of a user
+	UserAccessKey    RuleType = "USER_ACCESS_KEY" // access key of a user
 	
 	// Confidence levels
-	HighConfidence   Confidence = "HIGH"
+	HighConfidence   Confidence = "HIGH" 
 	MediumConfidence Confidence = "MEDIUM"
 	LowConfidence    Confidence = "LOW"
 	InfoConfidence   Confidence = "INFO"
 	
 	// Condition types
-	PolicyDocumentCondition   ConditionType = "POLICY_DOCUMENT"
-	ResourcePropertyCondition ConditionType = "RESOURCE_PROPERTY"
-	PatternMatchCondition     ConditionType = "PATTERN_MATCH"
+	PolicyDocumentCondition   ConditionType = "POLICY_DOCUMENT" // we must specify the document path
+	ResourcePropertyCondition ConditionType = "RESOURCE_PROPERTY" // direct property of the resource itself (not policies)
+	PatternMatchCondition     ConditionType = "PATTERN_MATCH" // NOTE -> Make it REGEX later 
 	AgeCondition              ConditionType = "AGE_CONDITION"
 	AndCondition              ConditionType = "AND"
 	OrCondition               ConditionType = "OR"
 	NotCondition              ConditionType = "NOT"
-	AllPoliciesCondition      ConditionType = "ALL_POLICIES" 
-	UnusedPermissionsCondition ConditionType = "UNUSED_PERMISSIONS" // Add this line
+	AllPoliciesCondition      ConditionType = "ALL_POLICIES" //  examines all policies attached to a resource (both inline and managed)
+	UnusedPermissionsCondition ConditionType = "UNUSED_PERMISSIONS" 
 )
 
 type Rule struct {
@@ -66,8 +66,9 @@ type ConfidenceRule struct {
 	Default bool       `yaml:"default,omitempty"`
 }
 
-type RuleSet struct {
-	Rules          []Rule    `yaml:"rules"`
+// RuleSet represents a collection of rules --- probably the final version (delete comment later)
+type RuleSet struct { 
+	Rules          []Rule    `yaml:"rules"` 
 	ExcludedRoles  []string  `yaml:"excluded_roles,omitempty"`
 	ExcludedUsers  []string  `yaml:"excluded_users,omitempty"`
 }

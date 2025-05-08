@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -194,4 +195,42 @@ func IsReadOnlyAction(action string) bool {
 	}
 	
 	return false
+}
+
+// IsActionMatchingAwsPattern checks if an action matches an AWS IAM pattern with wildcards
+func IsActionMatchingAwsPattern(action, pattern string) bool {
+    // Handle exact match
+    if action == pattern || pattern == "*" {
+        return true
+    }
+    
+    // Handle AWS wildcard pattern
+    if strings.Contains(pattern, "*") {
+        // Convert AWS wildcard to regex pattern
+        awsPattern := "^" + strings.Replace(pattern, "*", ".*", -1) + "$"
+        re, err := regexp.Compile(awsPattern)
+        if err == nil && re.MatchString(action) {
+            return true
+        }
+    }
+    
+    return false
+}
+
+// IsResourceMatchingAwsPattern checks if a resource ARN matches an AWS IAM pattern with wildcards
+func IsResourceMatchingAwsPattern(resource, pattern string) bool {
+    if resource == pattern || pattern == "*" {
+        return true
+    }
+    
+    if strings.Contains(pattern, "*") {
+        // Convert AWS wildcard to regex pattern
+        awsPattern := "^" + strings.Replace(pattern, "*", ".*", -1) + "$"
+        re, err := regexp.Compile(awsPattern)
+        if err == nil && re.MatchString(resource) {
+            return true
+        }
+    }
+    
+    return false
 }

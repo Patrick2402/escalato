@@ -60,6 +60,5 @@ func (v *UnusedPermissionsValidator) Validate(condition models.Condition, ctx *r
 		return true, nil
 	}
 
-	// If we reach here, the role has been used recently
 	return false, nil
 }

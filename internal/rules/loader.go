@@ -3,10 +3,12 @@ package rules
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
-	"gopkg.in/yaml.v3"
 	"escalato/internal/models"
+
+	"gopkg.in/yaml.v3"
 )
 
 // LoadRulesFromFile loads rules from a YAML file
@@ -108,7 +110,6 @@ func validateRules(ruleSet *models.RuleSet) error {
 	return nil
 }
 
-// validateCondition validates a single condition
 func validateCondition(condition models.Condition, ruleName string, conditionIndex int) error {
 	if condition.Type == "" {
 		return fmt.Errorf("rule '%s' condition #%d missing type", ruleName, conditionIndex+1)
@@ -119,6 +120,67 @@ func validateCondition(condition models.Condition, ruleName string, conditionInd
 		if condition.DocumentPath == "" {
 			return fmt.Errorf("rule '%s' condition #%d missing document_path", 
 				ruleName, conditionIndex+1)
+		}
+		
+		// Validate regex patterns in match criteria
+		if condition.Match != nil {
+			// Check action_regex if present
+			if actionRegex, exists := condition.Match["action_regex"]; exists {
+				if actionRegexStr, ok := actionRegex.(string); !ok {
+					return fmt.Errorf("rule '%s' condition #%d action_regex must be a string", 
+						ruleName, conditionIndex+1)
+				} else {
+					// Verify regex compiles correctly
+					if _, err := regexp.Compile(actionRegexStr); err != nil {
+						return fmt.Errorf("rule '%s' condition #%d invalid action_regex: %v", 
+							ruleName, conditionIndex+1, err)
+					}
+				}
+			}
+			
+			// Check resource_regex if present
+			if resourceRegex, exists := condition.Match["resource_regex"]; exists {
+				if resourceRegexStr, ok := resourceRegex.(string); !ok {
+					return fmt.Errorf("rule '%s' condition #%d resource_regex must be a string", 
+						ruleName, conditionIndex+1)
+				} else {
+					// Verify regex compiles correctly
+					if _, err := regexp.Compile(resourceRegexStr); err != nil {
+						return fmt.Errorf("rule '%s' condition #%d invalid resource_regex: %v", 
+							ruleName, conditionIndex+1, err)
+					}
+				}
+			}
+		}
+	
+	case models.AllPoliciesCondition:
+		if condition.Match != nil {
+			if actionRegex, exists := condition.Match["action_regex"]; exists {
+				if actionRegexStr, ok := actionRegex.(string); !ok {
+					return fmt.Errorf("rule '%s' condition #%d action_regex must be a string", 
+						ruleName, conditionIndex+1)
+				} else {
+					// Verify regex compiles correctly
+					if _, err := regexp.Compile(actionRegexStr); err != nil {
+						return fmt.Errorf("rule '%s' condition #%d invalid action_regex: %v", 
+							ruleName, conditionIndex+1, err)
+					}
+				}
+			}
+			
+			// Check resource_regex if present
+			if resourceRegex, exists := condition.Match["resource_regex"]; exists {
+				if resourceRegexStr, ok := resourceRegex.(string); !ok {
+					return fmt.Errorf("rule '%s' condition #%d resource_regex must be a string", 
+						ruleName, conditionIndex+1)
+				} else {
+					// Verify regex compiles correctly
+					if _, err := regexp.Compile(resourceRegexStr); err != nil {
+						return fmt.Errorf("rule '%s' condition #%d invalid resource_regex: %v", 
+							ruleName, conditionIndex+1, err)
+					}
+				}
+			}
 		}
 	
 	case models.ResourcePropertyCondition:
@@ -135,6 +197,18 @@ func validateCondition(condition models.Condition, ruleName string, conditionInd
 		if condition.Pattern == "" {
 			return fmt.Errorf("rule '%s' condition #%d missing pattern", 
 				ruleName, conditionIndex+1)
+		}
+		
+		// Validate regex pattern if specified
+		if condition.Options != nil {
+			if patternType, exists := condition.Options["type"]; exists {
+				if patternTypeStr, ok := patternType.(string); ok && patternTypeStr == "regex" {
+					if _, err := regexp.Compile(condition.Pattern); err != nil {
+						return fmt.Errorf("rule '%s' condition #%d invalid regex pattern: %v", 
+							ruleName, conditionIndex+1, err)
+					}
+				}
+			}
 		}
 	
 	case models.AgeCondition:
@@ -170,12 +244,17 @@ func validateCondition(condition models.Condition, ruleName string, conditionInd
 		}
 	
 	case models.UnusedPermissionsCondition:
-		// No specific validation needed for now
+		if condition.Threshold <= 0 {
+			condition.Threshold = 90
+		}
+	
+	default:
+		return fmt.Errorf("rule '%s' condition #%d unknown condition type: %s", 
+			ruleName, conditionIndex+1, condition.Type)
 	}
 	
 	return nil
 }
-
 
 func preprocessRules(ruleSet *models.RuleSet) {
 	for i := range ruleSet.Rules {
@@ -186,16 +265,13 @@ func preprocessRules(ruleSet *models.RuleSet) {
 			for j := range rule.Conditions {
 				condition := &rule.Conditions[j]
 				
-				// If condition concerns a specific policy, change it to ALL_POLICIES
 				if condition.Type == models.PolicyDocumentCondition && 
 				   strings.HasPrefix(condition.DocumentPath, "Policies[") {
-					// Save matching criteria
 					match := condition.Match
 					
-					// Change condition type to ALL_POLICIES
 					condition.Type = models.AllPoliciesCondition
-					condition.DocumentPath = "" // Not needed for ALL_POLICIES
-					condition.Match = match     // Keep matching criteria
+					condition.DocumentPath = "" 
+					condition.Match = match     
 				}
 			}
 		}
