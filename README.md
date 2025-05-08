@@ -1,4 +1,4 @@
-# Escalato
+# Escalato - AWS IAM Security Auditing Tool
 
 ```
 ,------.                     ,--.          ,--.          
@@ -24,10 +24,13 @@
   - [Global Exclusions](#global-exclusions)
   - [Confidence Levels](#confidence-levels)
 - [Examples](#examples)
+- [Advanced Features](#advanced-features)
+  - [Regular Expressions](#regular-expressions)
+  - [AWS Wildcard Patterns](#aws-wildcard-patterns)
 - [Technical Architecture](#technical-architecture)
 - [Extending Escalato](#extending-escalato)
 - [Troubleshooting](#troubleshooting)
-- [Contributing](#contributing)
+- [License](#license)
 
 ## Features
 
@@ -39,6 +42,8 @@
 - **JSON Export**: Export validation results for integration with other tools
 - **Global Exclusions**: Define roles and users to be excluded from all validations
 - **AWS-Aware**: Intelligent handling of AWS managed roles
+- **Regular Expressions**: Advanced pattern matching in rules
+- **AWS Wildcard Support**: Proper interpretation of AWS wildcard patterns in IAM policies
 
 ## Installation
 
@@ -177,8 +182,11 @@ document_path: "TrustPolicy"  # or "Policies[0].Document"
 match:
   statement_effect: "Allow"
   action: "s3:*"
+  action_regex: "s3:(Delete.*|Put.*)"  # New feature: regex for actions
   service: "s3"
   has_condition: false
+  resource: "*"
+  resource_regex: "arn:aws:s3:::.*-prod-.*"  # New feature: regex for resources
   principal:
     has_wildcard: true
 ```
@@ -192,7 +200,9 @@ type: ALL_POLICIES
 match:
   statement_effect: "Allow"
   action: "iam:*"
+  action_regex: "iam:(Create|Delete|Update).*"  # New feature: regex for actions
   resource: "*"
+  resource_regex: "arn:aws:.*:.*:role/.*admin.*"  # New feature: regex for resources
 ```
 
 #### RESOURCE_PROPERTY
@@ -214,7 +224,17 @@ type: PATTERN_MATCH
 property_path: "RoleName"
 pattern: "admin"
 options:
-  type: "contains"  # or "prefix", "suffix", "exact"
+  type: "contains"  # Options: "contains", "prefix", "suffix", "exact", "regex" (new)
+```
+
+Using the new regex option:
+
+```yaml
+type: PATTERN_MATCH
+property_path: "TrustPolicy"
+pattern: "(lambda|ec2|s3)\\.amazonaws\\.com"
+options:
+  type: "regex"  # New feature: regex pattern matching
 ```
 
 #### AGE_CONDITION
@@ -357,6 +377,75 @@ Here are some examples of common security rules:
       default: true
 ```
 
+## Advanced Features
+
+### Regular Expressions
+
+Escalato supports advanced pattern matching using regular expressions in various condition types:
+
+#### Administrative Role Naming Pattern Detection
+
+```yaml
+- id: admin_role_naming
+  name: "Administrative Role Naming Pattern"
+  description: "Role name matches administrative naming pattern"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: PATTERN_MATCH
+      property_path: "RoleName"
+      pattern: "^(admin|root|superuser|sysadmin).*$"
+      options:
+        type: "regex"
+  confidence_rules:
+    - level: HIGH
+      default: true
+```
+
+#### Sensitive AWS Service Actions
+
+```yaml
+- id: sensitive_s3_actions
+  name: "Sensitive S3 Actions"
+  description: "Role has permissions to perform sensitive S3 operations"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        action_regex: "s3:(Delete.*|Put.*|CreateBucket)"
+        resource: "*"
+  confidence_rules:
+    - level: HIGH
+      when: "has_wildcard_resource"
+    - level: MEDIUM
+      default: true
+```
+
+### AWS Wildcard Patterns
+
+Escalato supports wildcard patterns in AWS IAM policies. For example, if a policy contains an action with a wildcard (e.g., `s3:Put*`), Escalato will correctly match it against specific actions in your rules (e.g., `s3:PutObject`).
+
+#### Sensitive Data Access Detection
+
+```yaml
+- id: sensitive_data_access
+  name: "Sensitive Data Access"
+  description: "Role has access to buckets likely containing sensitive data"
+  severity: HIGH
+  resource_type: Role
+  conditions:
+    - type: ALL_POLICIES
+      match:
+        statement_effect: "Allow"
+        service: "s3"
+        resource_regex: "arn:aws:s3:::.*-(confidential|pii|financial|secure).*"
+  confidence_rules:
+    - level: HIGH
+      default: true
+```
+
 ## Technical Architecture
 
 Escalato is organized with a clean, modular architecture:
@@ -420,16 +509,6 @@ Enable diagnostic mode for detailed logs:
 ```bash
 escalato validate --diagnostics
 ```
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## License
 
