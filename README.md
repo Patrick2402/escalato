@@ -148,6 +148,82 @@ escalato validate --diagnostics
 
 Escalato uses a YAML file to define both security rules and global configurations.
 
+### Complete YAML Configuration Reference
+
+The table below documents all available options in the Escalato YAML configuration file:
+
+| Field | Sub-field | Description | Type | Default | Example |
+|-------|-----------|-------------|------|---------|---------|
+| **excluded_roles** | | List of role names to exclude from validation | string[] | [] | `["admin-role", "break-glass"]` |
+| **excluded_users** | | List of user names to exclude from validation | string[] | [] | `["admin", "service-account"]` |
+| **rules** | | List of security rules | rule[] | [] | See below |
+| **rules[].id** | | Unique identifier for the rule | string | *Required* | `"s3_wildcard_access"` |
+| **rules[].name** | | Human-readable name of the rule | string | *Required* | `"S3 Wildcard Access"` |
+| **rules[].description** | | Detailed description of the rule | string | *Required* | `"Role has wildcard access to S3 buckets"` |
+| **rules[].severity** | | The severity level of violations | enum | *Required* | `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO` |
+| **rules[].resource_type** | | Type of resource to validate | enum | *Required* | `Role`, `User` |
+| **rules[].conditions** | | List of conditions to evaluate | condition[] | *Required* | See below |
+| **rules[].confidence_rules** | | Rules for determining confidence level | confidence_rule[] | See default confidence | See below |
+| **rules[].tags** | | Optional tags for organizing rules | string[] | [] | `["s3", "storage", "data-access"]` |
+| **rules[].references** | | Optional references to external documentation | string[] | [] | `["CIS AWS Benchmark 1.2"]` |
+| | | | | | |
+| **Condition Types:** | | | | | |
+| **POLICY_DOCUMENT** | **document_path** | Path to the policy document to evaluate | string | *Required* | `"TrustPolicy"`, `"Policies[0].Document"` |
+| | **match** | Criteria to match in the policy document | object | {} | See match options below |
+| **ALL_POLICIES** | **match** | Criteria to match in all policy documents | object | {} | See match options below |
+| **RESOURCE_PROPERTY** | **property_path** | Path to the property to check | string | *Required* | `"Path"`, `"RoleName"` |
+| | **value** | Expected value of the property | any | *Required* | `"/aws-service-role/"` |
+| **PATTERN_MATCH** | **property_path** | Path to the string property to match | string | *Required* | `"RoleName"` |
+| | **pattern** | Pattern to match | string | *Required* | `"admin"` |
+| | **options.type** | Type of pattern matching | string | `"contains"` | `"contains"`, `"prefix"`, `"suffix"`, `"exact"`, `"regex"` |
+| **AGE_CONDITION** | **property_path** | Path to the timestamp property | string | *Required* | `"AccessKeys[0].CreateDate"` |
+| | **threshold** | Age threshold in days | integer | *Required* | `90` |
+| **UNUSED_PERMISSIONS** | **threshold** | Threshold in days for unused permissions | integer | `90` | `30` |
+| **Logical Operators:** | | | | | |
+| **AND** | **conditions** | List of conditions that must all be true | condition[] | *Required* | |
+| **OR** | **conditions** | List of conditions where at least one must be true | condition[] | *Required* | |
+| **NOT** | **conditions** | Single condition that must be false | condition[1] | *Required* | |
+| | | | | | |
+| **Match Options:** | | | | | |
+| | **statement_effect** | Effect to match in policy statement | string | | `"Allow"`, `"Deny"` |
+| | **action** | Action to match exactly | string | | `"s3:*"`, `"iam:PassRole"` |
+| | **action_regex** | Regular expression to match actions | string | | `"s3:(Delete.*\|Put.*)"` |
+| | **service** | Service prefix to match | string | | `"s3"`, `"iam"` |
+| | **resource** | Resource to match exactly | string | | `"*"`, `"arn:aws:s3:::example-bucket"` |
+| | **resource_regex** | Regular expression to match resources | string | | `"arn:aws:s3:::.*-prod-.*"` |
+| | **has_condition** | Whether the statement has conditions | boolean | | `true`, `false` |
+| | **principal.has_wildcard** | Whether the principal has wildcards | boolean | | `true`, `false` |
+| | | | | | |
+| **Confidence Rules:** | | | | | |
+| | **level** | Confidence level to assign | enum | | `HIGH`, `MEDIUM`, `LOW` |
+| | **when** | Expression that determines when to use this confidence level | string | | `"has_wildcard_resource"` |
+| | **default** | Whether this is the default confidence level | boolean | `false` | `true` |
+
+### Available Expressions for Confidence Rules
+
+The following variables and expressions can be used in the `when` field of confidence rules:
+
+| Variable/Expression | Description | Example |
+|---------------------|-------------|---------|
+| **has_global_wildcard** | True if resource is exactly "*" | `"has_global_wildcard"` |
+| **has_wildcard_resource** | True if resource contains "*" anywhere | `"has_wildcard_resource"` |
+| **has_leading_or_trailing_wildcard** | True if resource starts or ends with "*" | `"has_leading_or_trailing_wildcard"` |
+| **has_wildcard_principal** | True if principal contains "*" | `"has_wildcard_principal"` |
+| **has_conditions** | True if statement has conditions | `"has_conditions"` |
+| **principal_count** | Number of principals in statement | `"principal_count > 0"` |
+| **action_count** | Number of actions in statement | `"action_count > 5"` |
+| **read_only_count** | Number of read-only actions | `"read_only_count > 10"` |
+| **non_read_only_count** | Number of non-read-only actions | `"non_read_only_count > 3"` |
+| **resource_count** | Number of resources in statement | `"resource_count > 1"` |
+| **days_inactive** | Days since last activity (for UNUSED_PERMISSIONS) | `"days_inactive > 180"` |
+| **ageInDays** | Age in days (for AGE_CONDITION) | `"ageInDays > 365"` |
+
+You can combine expressions using logical operators:
+
+```yaml
+when: "has_wildcard_resource && non_read_only_count > 3"
+```
+
 ### Rule Structure
 
 Each rule consists of the following components:
