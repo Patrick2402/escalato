@@ -315,25 +315,63 @@ func (v *PolicyDocumentValidator) Validate(condition models.Condition, ctx *rule
 	return matchFound, nil
 }
 
-// matchesStatement checks if a statement matches the match criteria
 func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, criteria map[string]interface{}) bool {
+	v.logDebug("=== MATCHING STATEMENT: %+v", stmt)
+	v.logDebug("=== AGAINST CRITERIA: %+v", criteria)
+
 	if effectCriteria, ok := criteria["statement_effect"].(string); ok && effectCriteria != "" {
+		v.logDebug("Checking effect: '%s' against criteria: '%s'", stmt.Effect, effectCriteria)
 		if stmt.Effect != effectCriteria {
+			v.logDebug("Effect does not match - returning false")
 			return false
 		}
 	}
-	v.logDebug("TESTOWE")
+
 	if actionCriteria, ok := criteria["action"].(string); ok && actionCriteria != "" {
 		actionMatch := false
 		actions := utils.GetActionsFromStatement(stmt)
+		v.logDebug("Checking actions: %v against criteria: '%s'", actions, actionCriteria)
 
 		for _, action := range actions {
-			if action == actionCriteria || action == "*" {
+			v.logDebug("  Checking action: '%s' against criteria: '%s'", action, actionCriteria)
+
+			// Sprawdź dokładne dopasowanie
+			if action == actionCriteria {
+				v.logDebug("    MATCHED: exact match")
 				actionMatch = true
 				break
 			}
+
+			// Sprawdź globalne wildcardy
+			if action == "*" {
+				// Globalny wildcard dopasowuje się tylko do globalnego wildcard
+				if actionCriteria == "*" {
+					v.logDebug("    MATCHED: both are global wildcards")
+					actionMatch = true
+					break
+				}
+				// W przeciwnym razie kontynuuj do innych sprawdzeń
+			}
+
+			// Sprawdź wildcardy AWS
 			if strings.Contains(action, "*") {
+				// Sprawdź czy serwis się zgadza
+				actionParts := strings.Split(action, ":")
+				criteriaParts := strings.Split(actionCriteria, ":")
+
+				if len(actionParts) == 2 && len(criteriaParts) == 2 {
+					// Jeśli mamy wildcarda na akcji (s3:*) i konkretną akcję (s3:GetObject),
+					// to wildcard dopasowuje konkretną akcję
+					if actionParts[0] == criteriaParts[0] && actionParts[1] == "*" {
+						v.logDebug("    MATCHED: service wildcard matches specific action")
+						actionMatch = true
+						break
+					}
+				}
+
+				// Sprawdź czy wildcard dopasowuje wzór
 				if utils.IsActionMatchingAwsPattern(actionCriteria, action) {
+					v.logDebug("    MATCHED: pattern match")
 					actionMatch = true
 					break
 				}
@@ -341,6 +379,7 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		}
 
 		if !actionMatch {
+			v.logDebug("Action does not match - returning false")
 			return false
 		}
 	}
@@ -348,75 +387,91 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 	if actionRegexCriteria, ok := criteria["action_regex"].(string); ok && actionRegexCriteria != "" {
 		actionMatch := false
 		actions := utils.GetActionsFromStatement(stmt)
+		v.logDebug("Checking actions: %v against regex: '%s'", actions, actionRegexCriteria)
 
 		re, err := regexp.Compile(actionRegexCriteria)
-		if err == nil {
-			for _, action := range actions {
-				// Handle global wildcard
-				if action == "*" {
+		if err != nil {
+			v.logDebug("Error compiling regex: %v", err)
+			return false
+		}
+
+		for _, action := range actions {
+			v.logDebug("  Checking action: '%s' against regex: '%s'", action, actionRegexCriteria)
+
+			// Obsługa globalnego wildcard - tylko jeśli wzorzec też jest globalny
+			if action == "*" {
+				// Global wildcard powinien pasować tylko do globalnego wzorca
+				// lub konkretnych wzorców z odpowiednią logiką
+				if actionRegexCriteria == ".*" || actionRegexCriteria == "*" {
+					v.logDebug("    MATCHED: global wildcard to global pattern")
 					actionMatch = true
 					break
 				}
 
-				// Handle AWS-style wildcards
-				if strings.Contains(action, "*") {
-					// Convert AWS wildcard to regex pattern
-					awsPattern := "^" + strings.Replace(action, "*", ".*", -1) + "$"
-					targetActionRe, err := regexp.Compile(awsPattern)
+				// Dla bardziej złożonych wzorców, potencjalnie dopasowuje wszystko
+				v.logDebug("    Global wildcard might match any action, checking if safe for rule")
 
-					// Check if this AWS wildcard pattern would include any actions
-					// that match our regex criteria
-					if err == nil {
-						// Try to find a potential match by checking if there's any overlap
-						// between the pattern territories
-						testActions := []string{
-							strings.Replace(actionRegexCriteria, "\\(", "", -1),
-							strings.Replace(actionRegexCriteria, "\\)", "", -1),
-							strings.Replace(actionRegexCriteria, ".*", "TEST", -1),
-							strings.Replace(actionRegexCriteria, "[^:]*", "TEST", -1),
-							strings.Replace(actionRegexCriteria, "(.*)", "TEST", -1),
-						}
+				// Dla bezpieczeństwa, kontynuuj do kolejnych sprawdzeń
+				// Zamiast automatycznie uznawać za dopasowane
+			}
 
-						for _, testAction := range testActions {
-							// Simplify test action if it's a regex
-							testAction = strings.TrimPrefix(testAction, "^")
-							testAction = strings.TrimSuffix(testAction, "$")
-							testAction = strings.Replace(testAction, "\\", "", -1)
+			// Handle AWS-style wildcards jak s3:* - specjalne traktowanie
+			if strings.HasSuffix(action, ":*") {
+				servicePart := strings.TrimSuffix(action, ":*")
 
-							// Check service part for service:* patterns
-							if strings.HasSuffix(action, ":*") {
-								actionService := strings.TrimSuffix(action, ":*")
+				// Sprawdź czy wzorzec dotyczy tego serwisu
+				if utils.IsServiceMatchingRegex(servicePart, actionRegexCriteria) {
+					v.logDebug("    Service wildcard matches service in pattern")
 
-								// Extract service from test action
-								testParts := strings.Split(testAction, ":")
-								if len(testParts) > 0 && testParts[0] == actionService {
-									actionMatch = true
-									break
-								}
-							}
+					// Rozwiń wildcard na reprezentatywne akcje
+					v.logDebug("    Expanding service wildcard")
+					expandedActions := utils.ExpandWildcardAction(action)
+					v.logDebug("    Expanded actions: %v", expandedActions)
 
-							// Attempt to match with the AWS pattern
-							if targetActionRe.MatchString(testAction) {
-								actionMatch = true
-								break
-							}
-						}
-
-						if actionMatch {
+					for _, expanded := range expandedActions {
+						isMatch := re.MatchString(expanded)
+						v.logDebug("      Checking expanded: '%s', match: %v", expanded, isMatch)
+						if isMatch {
+							v.logDebug("      MATCHED: expanded action")
+							actionMatch = true
 							break
 						}
 					}
+					if actionMatch {
+						break
+					}
+				} else {
+					v.logDebug("    Service wildcard doesn't match service in pattern")
 				}
 
-				// Try direct regex match
-				if re.MatchString(action) {
+				// Spróbuj bezpośredniego dopasowania
+				isMatch := re.MatchString(action)
+				if isMatch {
+					v.logDebug("    MATCHED: direct regex on wildcard")
 					actionMatch = true
 					break
+				}
+
+				continue // Już sprawdziliśmy ekspansję
+			}
+
+			// Bezpośrednie dopasowanie regex dla konkretnych akcji
+			isMatch := re.MatchString(action)
+			v.logDebug("    Direct regex match: %v", isMatch)
+			if isMatch {
+				// Dodatkowa weryfikacja dla bezpieczeństwa
+				if utils.ShouldMatchServiceAction(action, actionRegexCriteria) {
+					v.logDebug("    MATCHED: direct regex confirmed")
+					actionMatch = true
+					break
+				} else {
+					v.logDebug("    REJECTED: regex match but action semantics don't align")
 				}
 			}
 		}
 
 		if !actionMatch {
+			v.logDebug("Action regex does not match - returning false")
 			return false
 		}
 	}
@@ -425,10 +480,14 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 	if serviceCriteria, ok := criteria["service"].(string); ok && serviceCriteria != "" {
 		serviceMatch := false
 		actions := utils.GetActionsFromStatement(stmt)
+		v.logDebug("Checking actions: %v for service: '%s'", actions, serviceCriteria)
 
 		for _, action := range actions {
-			// Handle global wildcard
+			v.logDebug("  Checking action: '%s' for service: '%s'", action, serviceCriteria)
+
+			// Global wildcard matches any service
 			if action == "*" {
+				v.logDebug("    MATCHED: global wildcard matches any service")
 				serviceMatch = true
 				break
 			}
@@ -436,14 +495,17 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 			parts := strings.Split(action, ":")
 			if len(parts) == 2 {
 				service := parts[0]
+
 				// Match exact service
 				if service == serviceCriteria {
+					v.logDebug("    MATCHED: exact service match")
 					serviceMatch = true
 					break
 				}
 
 				// Match service wildcard (e.g., "service:*")
 				if service == "*" {
+					v.logDebug("    MATCHED: service wildcard")
 					serviceMatch = true
 					break
 				}
@@ -451,20 +513,25 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		}
 
 		if !serviceMatch {
+			v.logDebug("Service does not match - returning false")
 			return false
 		}
 	}
 
 	// Check Principal (if specified)
 	if principalCriteria, ok := criteria["principal"].(map[string]interface{}); ok && len(principalCriteria) > 0 {
+		v.logDebug("Checking principal criteria")
+
 		// Extract principals
 		principals := utils.GetPrincipalsFromStatement(stmt)
 
 		// Check for wildcard principal
 		if hasWildcard, ok := principalCriteria["has_wildcard"].(bool); ok {
 			wildcardFound := utils.HasWildcardPrincipal(principals)
+			v.logDebug("  Required has_wildcard=%v, actual=%v", hasWildcard, wildcardFound)
 
 			if hasWildcard != wildcardFound {
+				v.logDebug("Principal wildcard does not match - returning false")
 				return false
 			}
 		}
@@ -474,17 +541,30 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 	if resourceCriteria, ok := criteria["resource"].(string); ok && resourceCriteria != "" {
 		resourceMatch := false
 		resources := utils.GetResourcesFromStatement(stmt)
+		v.logDebug("Checking resources: %v against criteria: '%s'", resources, resourceCriteria)
 
 		for _, resource := range resources {
+			v.logDebug("  Checking resource: '%s' against criteria: '%s'", resource, resourceCriteria)
+
 			// Direct match or global wildcard
-			if resource == resourceCriteria || resource == "*" {
+			if resource == resourceCriteria {
+				v.logDebug("    MATCHED: exact match")
+				resourceMatch = true
+				break
+			}
+
+			if resource == "*" {
+				v.logDebug("    MATCHED: global wildcard")
 				resourceMatch = true
 				break
 			}
 
 			// Check if policy resource has AWS wildcard
 			if strings.Contains(resource, "*") {
-				if utils.IsResourceMatchingAwsPattern(resourceCriteria, resource) {
+				isMatch := utils.IsResourceMatchingAwsPattern(resourceCriteria, resource)
+				v.logDebug("    Pattern match: %v", isMatch)
+				if isMatch {
+					v.logDebug("    MATCHED: pattern match")
 					resourceMatch = true
 					break
 				}
@@ -492,66 +572,65 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 		}
 
 		if !resourceMatch {
+			v.logDebug("Resource does not match - returning false")
 			return false
 		}
 	}
 
-	// Check Resource with regex (new feature)
+	// Check Resource with regex
 	if resourceRegexCriteria, ok := criteria["resource_regex"].(string); ok && resourceRegexCriteria != "" {
 		resourceMatch := false
 		resources := utils.GetResourcesFromStatement(stmt)
+		v.logDebug("Checking resources: %v against regex: '%s'", resources, resourceRegexCriteria)
 
 		re, err := regexp.Compile(resourceRegexCriteria)
-		if err == nil {
-			for _, resource := range resources {
-				if resource == "*" {
-					resourceMatch = true
-					break
-				}
+		if err != nil {
+			v.logDebug("Error compiling regex: %v", err)
+			return false
+		}
 
-				// Handle AWS-style wildcards
-				if strings.Contains(resource, "*") {
-					// Same approach as for actions
-					awsPattern := "^" + strings.Replace(resource, "*", ".*", -1) + "$"
-					targetResourceRe, err := regexp.Compile(awsPattern)
+		for _, resource := range resources {
+			v.logDebug("  Checking resource: '%s' against regex: '%s'", resource, resourceRegexCriteria)
 
-					if err == nil {
-						// Check for potential overlap between patterns
-						testResources := []string{
-							strings.Replace(resourceRegexCriteria, "\\(", "", -1),
-							strings.Replace(resourceRegexCriteria, "\\)", "", -1),
-							strings.Replace(resourceRegexCriteria, ".*", "TEST", -1),
-							strings.Replace(resourceRegexCriteria, "(.*)", "TEST", -1),
-						}
+			// Globalny wildcard pasuje do wszystkiego
+			if resource == "*" {
+				v.logDebug("    MATCHED: global wildcard")
+				resourceMatch = true
+				break
+			}
 
-						for _, testResource := range testResources {
-							// Simplify test resource if it's a regex
-							testResource = strings.TrimPrefix(testResource, "^")
-							testResource = strings.TrimSuffix(testResource, "$")
-							testResource = strings.Replace(testResource, "\\", "", -1)
+			// Bezpośrednie dopasowanie regex
+			isMatch := re.MatchString(resource)
+			v.logDebug("    Direct regex match: %v", isMatch)
+			if isMatch {
+				v.logDebug("    MATCHED: direct regex")
+				resourceMatch = true
+				break
+			}
 
-							// Attempt to match with the AWS pattern
-							if targetResourceRe.MatchString(testResource) {
-								resourceMatch = true
-								break
-							}
-						}
+			// Obsługa wildcardów AWS
+			if strings.Contains(resource, "*") {
+				v.logDebug("    Resource contains wildcard, expanding")
+				expandedResources := utils.ExpandWildcardResource(resource)
+				v.logDebug("    Expanded resources: %v", expandedResources)
 
-						if resourceMatch {
-							break
-						}
+				for _, expanded := range expandedResources {
+					isMatch := re.MatchString(expanded)
+					v.logDebug("      Checking expanded: '%s', match: %v", expanded, isMatch)
+					if isMatch {
+						v.logDebug("      MATCHED: expanded resource")
+						resourceMatch = true
+						break
 					}
 				}
-
-				// Try direct regex match
-				if re.MatchString(resource) {
-					resourceMatch = true
+				if resourceMatch {
 					break
 				}
 			}
 		}
 
 		if !resourceMatch {
+			v.logDebug("Resource regex does not match - returning false")
 			return false
 		}
 	}
@@ -559,11 +638,11 @@ func (v *PolicyDocumentValidator) matchesStatement(stmt utils.PolicyStatement, c
 	// Check Condition (if specified)
 	if conditionCheck, ok := criteria["has_condition"].(bool); ok {
 		hasCondition := stmt.Condition != nil && stmt.Condition != ""
+		v.logDebug("Checking condition: %v against criteria: %v", hasCondition, conditionCheck)
 		if conditionCheck != hasCondition {
 			return false
 		}
 	}
-
 	return true
 }
 
@@ -579,16 +658,34 @@ func NewAllPoliciesValidator(diagnostics bool) ConditionValidator {
 
 func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.EvaluationContext) (bool, error) {
 	v.logDebug("Starting validation for resource %s with ALL_POLICIES", ctx.Resource.GetName())
+	v.logDebug("CONDITION: %+v", condition)
+	if condition.Match != nil {
+		for k, val := range condition.Match {
+			v.logDebug("Match criteria %s: %v", k, val)
+		}
+	}
 
 	policiesValue, exists := ctx.Resource.GetProperty("Policies")
 	if !exists {
 		v.logDebug("No policies found for resource %s", ctx.Resource.GetName())
+		ctx.Data["no_policies"] = true
+		ctx.Data["validation_skipped"] = "ALL_POLICIES validation skipped: no policies found"
+
 		return false, nil
 	}
 
 	policies, ok := policiesValue.([]models.Policy)
 	if !ok {
 		v.logDebug("policies is not a slice of Policy: %T", policiesValue)
+		ctx.Data["invalid_policies_type"] = fmt.Sprintf("%T", policiesValue)
+		ctx.Data["validation_skipped"] = "ALL_POLICIES validation skipped: invalid policies type"
+		return false, nil
+	}
+
+	if len(policies) == 0 {
+		v.logDebug("Empty policies list for resource %s", ctx.Resource.GetName())
+		ctx.Data["empty_policies"] = true
+		ctx.Data["validation_skipped"] = "ALL_POLICIES validation skipped: empty policies list"
 		return false, nil
 	}
 
@@ -626,18 +723,10 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 
 		for stmtIdx, stmt := range doc.Statement {
 			v.logDebug("Checking statement %d in policy %d", stmtIdx, i)
-			v.logDebug("kurwa2")
-			v.logDebug("CONDITION: %+v", condition)
-
-			if condition.Match != nil {
-				for k, _ := range condition.Match {
-					v.logDebug("Match criteria %s:", k)
-				}
-			}
 			if v.matchesStatement(stmt, condition.Match) {
 				v.logDebug("Statement %d in policy %d matched criteria", stmtIdx, i)
 				policyMatched = true
-				v.logDebug("kurwa3")
+
 				actions := utils.GetActionsFromStatement(stmt)
 				v.logDebug("Actions: %v", actions)
 				if len(actions) > 0 {
@@ -647,7 +736,7 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 							allActions = append(allActions, action)
 						}
 
-						if strings.Contains(action, "*") { // action == "*"
+						if strings.Contains(action, "*") {
 							hasWildcardActions = true
 						}
 
@@ -656,7 +745,6 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 							service := parts[0]
 							serviceMatches[service]++
 						} else if action == "*" {
-							// Dla globalnego wildcard "*" dodaj do serwisów określonych w warunku
 							if serviceCriteria, ok := condition.Match["service"].(string); ok {
 								serviceMatches[serviceCriteria]++
 							}
@@ -672,385 +760,336 @@ func (v *AllPoliciesValidator) Validate(condition models.Condition, ctx *rules.E
 							}
 						}
 					}
-				}
+					// Zbierz informacje o zasobach
+					resources := utils.GetResourcesFromStatement(stmt)
+					if len(resources) > 0 {
+						// Dodaj zasoby do ogólnej listy
+						for _, resource := range resources {
+							// Unikaj duplikatów
+							if !utils.Contains(allResources, resource) {
+								allResources = append(allResources, resource)
+							}
 
-				// Zbierz informacje o zasobach
-				resources := utils.GetResourcesFromStatement(stmt)
-				if len(resources) > 0 {
-					// Dodaj zasoby do ogólnej listy
-					for _, resource := range resources {
-						// Unikaj duplikatów
-						if !utils.Contains(allResources, resource) {
-							allResources = append(allResources, resource)
-						}
-
-						// Sprawdź wildcards w zasobach
-						if resource == "*" {
-							hasGlobalWildcard = true
-						} else if strings.Contains(resource, "*") {
-							hasWildcardResource = true
-							if strings.HasPrefix(resource, "*") || strings.HasSuffix(resource, "*") {
-								hasLeadingOrTrailingWildcard = true
+							// Sprawdź wildcards w zasobach
+							if resource == "*" {
+								hasGlobalWildcard = true
+							} else if strings.Contains(resource, "*") {
+								hasWildcardResource = true
+								if strings.HasPrefix(resource, "*") || strings.HasSuffix(resource, "*") {
+									hasLeadingOrTrailingWildcard = true
+								}
 							}
 						}
 					}
 				}
 			}
-		}
 
-		if policyMatched {
-			allMatchedPolicies = append(allMatchedPolicies, i)
-		}
-	}
-
-	if len(allMatchedPolicies) == 0 {
-		v.logDebug("No matching policies found for resource %s", ctx.Resource.GetName())
-		return false, nil
-	}
-
-	ctx.Data["matched_policy_count"] = len(allMatchedPolicies)
-	ctx.Data["actions"] = allActions
-	ctx.Data["action_count"] = len(allActions)
-	ctx.Data["resources"] = allResources
-	ctx.Data["resource_count"] = len(allResources)
-	ctx.Data["non_read_only_actions"] = allNonReadOnlyActions
-	ctx.Data["read_only_count"] = readOnlyCount
-	ctx.Data["non_read_only_count"] = nonReadOnlyCount
-	ctx.Data["has_wildcard_resource"] = hasWildcardResource || hasGlobalWildcard
-	ctx.Data["has_global_wildcard"] = hasGlobalWildcard
-	ctx.Data["has_leading_or_trailing_wildcard"] = hasLeadingOrTrailingWildcard
-	ctx.Data["has_wildcard_actions"] = hasWildcardActions
-	ctx.Data["service_matches"] = serviceMatches
-
-	var policyNames []string
-	for _, idx := range allMatchedPolicies {
-		policyNames = append(policyNames, policies[idx].Name)
-	}
-	ctx.Data["matched_policies"] = policyNames
-
-	// Utwórz szczegółowy opis dla dopasowania
-	resourceName := ctx.Resource.GetName()
-
-	// Generuj opis na podstawie zebranych danych
-	var details string
-
-	if len(allNonReadOnlyActions) > 0 {
-		// Opis oparty na non-read-only akcjach
-		details = fmt.Sprintf("Resource '%s' allows %d non-read-only actions",
-			resourceName, len(allNonReadOnlyActions))
-
-		// Dodaj przykłady akcji
-		if len(allNonReadOnlyActions) <= 3 {
-			details += fmt.Sprintf(" (e.g., %s)", strings.Join(allNonReadOnlyActions, ", "))
-		} else {
-			details += fmt.Sprintf(" (e.g., %s, ...)", strings.Join(allNonReadOnlyActions[:3], ", "))
-		}
-	} else if hasWildcardActions {
-		// Opis oparty na akcjach z wildcardami
-		var wildcardActions []string
-		for _, action := range allActions {
-			if strings.Contains(action, "*") {
-				wildcardActions = append(wildcardActions, action)
+			if policyMatched {
+				allMatchedPolicies = append(allMatchedPolicies, i)
 			}
 		}
 
-		details = fmt.Sprintf("Resource '%s' allows wildcard actions", resourceName)
-
-		// Dodaj przykłady akcji z wildcardami
-		if len(wildcardActions) <= 3 {
-			details += fmt.Sprintf(" (e.g., %s)", strings.Join(wildcardActions, ", "))
-		} else {
-			details += fmt.Sprintf(" (e.g., %s, ...)", strings.Join(wildcardActions[:3], ", "))
+		if len(allMatchedPolicies) == 0 {
+			v.logDebug("No matching policies found for resource %s", ctx.Resource.GetName())
+			return false, nil
 		}
-	} else {
-		// Ogólny opis
-		details = fmt.Sprintf("Resource '%s' has permissions matching criteria", resourceName)
 
-		// Dodaj informacje o liczbie dopasowań
-		if len(allActions) > 0 {
-			if len(allActions) <= 3 {
-				details += fmt.Sprintf(" (actions: %s)", strings.Join(allActions, ", "))
+		ctx.Data["matched_policy_count"] = len(allMatchedPolicies)
+		ctx.Data["actions"] = allActions
+		ctx.Data["action_count"] = len(allActions)
+		ctx.Data["resources"] = allResources
+		ctx.Data["resource_count"] = len(allResources)
+		ctx.Data["non_read_only_actions"] = allNonReadOnlyActions
+		ctx.Data["read_only_count"] = readOnlyCount
+		ctx.Data["non_read_only_count"] = nonReadOnlyCount
+		ctx.Data["has_wildcard_resource"] = hasWildcardResource || hasGlobalWildcard
+		ctx.Data["has_global_wildcard"] = hasGlobalWildcard
+		ctx.Data["has_leading_or_trailing_wildcard"] = hasLeadingOrTrailingWildcard
+		ctx.Data["has_wildcard_actions"] = hasWildcardActions
+		ctx.Data["service_matches"] = serviceMatches
+
+		var policyNames []string
+		for _, idx := range allMatchedPolicies {
+			policyNames = append(policyNames, policies[idx].Name)
+		}
+		ctx.Data["matched_policies"] = policyNames
+
+		resourceName := ctx.Resource.GetName()
+		var details string
+
+		if len(allNonReadOnlyActions) > 0 {
+			details = fmt.Sprintf("Resource '%s' allows %d non-read-only actions",
+				resourceName, len(allNonReadOnlyActions))
+
+			if len(allNonReadOnlyActions) <= 3 {
+				details += fmt.Sprintf(" (e.g., %s)", strings.Join(allNonReadOnlyActions, ", "))
 			} else {
-				details += fmt.Sprintf(" (%d actions)", len(allActions))
+				details += fmt.Sprintf(" (e.g., %s, ...)", strings.Join(allNonReadOnlyActions[:3], ", "))
+			}
+		} else if hasWildcardActions {
+			var wildcardActions []string
+			for _, action := range allActions {
+				if strings.Contains(action, "*") {
+					wildcardActions = append(wildcardActions, action)
+				}
+			}
+
+			details = fmt.Sprintf("Resource '%s' allows wildcard actions", resourceName)
+
+			if len(wildcardActions) <= 3 {
+				details += fmt.Sprintf(" (e.g., %s)", strings.Join(wildcardActions, ", "))
+			} else {
+				details += fmt.Sprintf(" (e.g., %s, ...)", strings.Join(wildcardActions[:3], ", "))
+			}
+		} else {
+	
+			details = fmt.Sprintf("Resource '%s' has permissions matching criteria", resourceName)
+
+			if len(allActions) > 0 {
+				if len(allActions) <= 3 {
+					details += fmt.Sprintf(" (actions: %s)", strings.Join(allActions, ", "))
+				} else {
+					details += fmt.Sprintf(" (%d actions)", len(allActions))
+				}
 			}
 		}
+
+		if hasGlobalWildcard {
+			details += " with global wildcard resource (*)"
+		} else if hasWildcardResource {
+			details += " with wildcard in resource"
+		}
+
+		ctx.Data["details"] = details
+
+		v.logDebug("Validation successful for resource %s. Found %d matching policies.",
+			ctx.Resource.GetName(), len(allMatchedPolicies))
+
+		return true, nil
 	}
-
-	// Dodaj informacje o zasobach
-	if hasGlobalWildcard {
-		details += " with global wildcard resource (*)"
-	} else if hasWildcardResource {
-		details += " with wildcard in resource"
-	}
-
-	ctx.Data["details"] = details
-
-	v.logDebug("Validation successful for resource %s. Found %d matching policies.",
-		ctx.Resource.GetName(), len(allMatchedPolicies))
-
 	return true, nil
 }
 
 func (v *AllPoliciesValidator) matchesStatement(stmt utils.PolicyStatement, criteria map[string]interface{}) bool {
-	// Dodaj szczegółowe logi dla każdego warunku
-	v.logDebug("=== MATCHING STATEMENT: %+v", stmt)
-	v.logDebug("=== AGAINST CRITERIA: %+v", criteria)
+	
+    if effectCriteria, ok := criteria["statement_effect"].(string); ok && effectCriteria != "" {
+        v.logDebug("Checking effect: '%s' against criteria: '%s'", stmt.Effect, effectCriteria)
+        if stmt.Effect != effectCriteria {
+            v.logDebug("Effect does not match - returning false")
+            return false
+        }
+    }
 
-	if effectCriteria, ok := criteria["statement_effect"].(string); ok && effectCriteria != "" {
-		v.logDebug("Checking effect: '%s' against criteria: '%s'", stmt.Effect, effectCriteria)
-		if stmt.Effect != effectCriteria {
-			v.logDebug("Effect does not match - returning false")
-			return false
-		}
-	}
+    actions := utils.GetActionsFromStatement(stmt)
 
-	if actionCriteria, ok := criteria["action"].(string); ok && actionCriteria != "" {
-		actionMatch := false
-		actions := utils.GetActionsFromStatement(stmt)
-		v.logDebug("Checking actions: %v against criteria: '%s'", actions, actionCriteria)
+    if actionCriteria, ok := criteria["action"].(string); ok && actionCriteria != "" {
+        v.logDebug("Checking actions: %v against criteria: '%s'", actions, actionCriteria)
+        
+        actionMatch := false
+        for _, action := range actions {
+            v.logDebug("  Checking action: '%s' against criteria: '%s'", action, actionCriteria)
 
-		for _, action := range actions {
-			v.logDebug("  Checking action: '%s' against criteria: '%s'", action, actionCriteria)
+            // Najprostszy przypadek: dokładne dopasowanie
+            if action == actionCriteria {
+                v.logDebug("    MATCHED: exact match")
+                actionMatch = true
+                break
+            }
 
-			// Dodaj specjalne logi dla sprawdzenia dokładnych warunków
-			isExactMatch := action == actionCriteria
-			isWildcardAction := action == "*"
-			isWildcardCriteria := actionCriteria == "*"
+            // Obsługa globalnego wildcard
+            if action == "*" {
+                if actionCriteria == "*" {
+                    v.logDebug("    MATCHED: both are global wildcards")
+                    actionMatch = true
+                    break
+                }
+                continue
+            }
 
-			v.logDebug("    isExactMatch=%v, isWildcardAction=%v, isWildcardCriteria=%v",
-				isExactMatch, isWildcardAction, isWildcardCriteria)
+            if strings.Contains(action, "*") {
+                parts := strings.Split(action, ":")
+                criteriaparts := strings.Split(actionCriteria, ":")
+                
+                if len(parts) == 2 && len(criteriaparts) == 2 {
+                    if parts[0] == criteriaparts[0] && parts[1] == "*" {
+                        v.logDebug("    MATCHED: service wildcard matches specific action")
+                        actionMatch = true
+                        break
+                    }
+                }
+                
+                if utils.IsActionMatchingAwsPattern(actionCriteria, action) {
+                    v.logDebug("    MATCHED: pattern match")
+                    actionMatch = true
+                    break
+                }
+            }
+        }
 
-			if isExactMatch {
-				v.logDebug("    MATCHED: exact match")
-				actionMatch = true
-				break
-			}
+        if !actionMatch {
+            v.logDebug("Action does not match - returning false")
+            return false
+        }
+    }
 
-			if isWildcardAction && isWildcardCriteria {
-				v.logDebug("    MATCHED: both are wildcards")
-				actionMatch = true
-				break
-			}
+    // check action_regex
+    if actionRegexCriteria, ok := criteria["action_regex"].(string); ok && actionRegexCriteria != "" {
+        v.logDebug("Checking actions: %v against regex: '%s'", actions, actionRegexCriteria)
+        
+        re, err := regexp.Compile(actionRegexCriteria)
+        if err != nil {
+            v.logDebug("Error compiling regex: %v", err)
+            return false
+        }
 
-			if strings.Contains(action, "*") {
-				isPatternMatch := utils.IsActionMatchingAwsPattern(actionCriteria, action)
-				v.logDebug("    Checking pattern match: %v", isPatternMatch)
-				if isPatternMatch {
-					v.logDebug("    MATCHED: pattern match")
-					actionMatch = true
-					break
-				}
-			}
-		}
+        actionMatch := false
+        for _, action := range actions {
+            v.logDebug("  Checking action: '%s' against regex: '%s'", action, actionRegexCriteria)
 
-		if !actionMatch {
-			v.logDebug("Action does not match - returning false")
-			return false
-		}
-	}
+            if !strings.Contains(action, "*") {
+                if re.MatchString(action) {
+                    v.logDebug("    MATCHED: direct regex match")
+                    actionMatch = true
+                    break
+                }
+            } else {
+                if utils.IsWildcardActionMatchingRegex(action, actionRegexCriteria) {
+                    v.logDebug("    MATCHED: wildcard action matches regex")
+                    actionMatch = true
+                    break
+                }
+            }
+        }
 
-	if actionRegexCriteria, ok := criteria["action_regex"].(string); ok && actionRegexCriteria != "" {
-		actionMatch := false
-		actions := utils.GetActionsFromStatement(stmt)
-		v.logDebug("Checking actions: %v against regex: '%s'", actions, actionRegexCriteria)
+        if !actionMatch {
+            v.logDebug("Action regex does not match - returning false")
+            return false
+        }
+    }
 
-		re, err := regexp.Compile(actionRegexCriteria)
-		if err != nil {
-			v.logDebug("Error compiling regex: %v", err)
-			return false
-		}
+    if serviceCriteria, ok := criteria["service"].(string); ok && serviceCriteria != "" {
+        v.logDebug("Checking actions: %v for service: '%s'", actions, serviceCriteria)
+        
+        serviceMatch := false
+        for _, action := range actions {
+            v.logDebug("  Checking action: '%s' for service: '%s'", action, serviceCriteria)
+            
+            if action == "*" {
+                v.logDebug("    MATCHED: global wildcard matches any service")
+                serviceMatch = true
+                break
+            }
 
-		for _, action := range actions {
-			v.logDebug("  Checking action: '%s' against regex: '%s'", action, actionRegexCriteria)
+            parts := strings.Split(action, ":")
+            if len(parts) == 2 {
+                service := parts[0]
+                
+                if service == serviceCriteria || service == "*" {
+                    v.logDebug("    MATCHED: service match")
+                    serviceMatch = true
+                    break
+                }
+            }
+        }
 
-			if action == "*" {
-				v.logDebug("    MATCHED: global wildcard")
-				actionMatch = true
-				break
-			}
+        if !serviceMatch {
+            v.logDebug("Service does not match - returning false")
+            return false
+        }
+    }
 
-			if strings.Contains(action, "*") {
-				v.logDebug("    Action contains wildcard, expanding")
-				expandedActions := utils.ExpandWildcardAction(action)
-				v.logDebug("    Expanded actions: %v", expandedActions)
+    resources := utils.GetResourcesFromStatement(stmt)
+    
+    if resourceCriteria, ok := criteria["resource"].(string); ok && resourceCriteria != "" {
+        v.logDebug("Checking resources: %v against criteria: '%s'", resources, resourceCriteria)
+        
+        resourceMatch := false
+        for _, resource := range resources {
+            v.logDebug("  Checking resource: '%s' against criteria: '%s'", resource, resourceCriteria)
+            
+            if resource == resourceCriteria || resource == "*" {
+                v.logDebug("    MATCHED: exact match or global wildcard")
+                resourceMatch = true
+                break
+            }
 
-				for _, expanded := range expandedActions {
-					isMatch := re.MatchString(expanded)
-					v.logDebug("      Checking expanded: '%s', match: %v", expanded, isMatch)
-					if isMatch {
-						v.logDebug("      MATCHED: expanded action")
-						actionMatch = true
-						break
-					}
-				}
-				if actionMatch {
-					break
-				}
-			}
+            if strings.Contains(resource, "*") {
+                if utils.IsResourceMatchingAwsPattern(resourceCriteria, resource) {
+                    v.logDebug("    MATCHED: pattern match")
+                    resourceMatch = true
+                    break
+                }
+            }
+        }
 
-			// Try direct regex match
-			isMatch := re.MatchString(action)
-			v.logDebug("    Direct regex match: %v", isMatch)
-			if isMatch {
-				v.logDebug("    MATCHED: direct regex")
-				actionMatch = true
-				break
-			}
-		}
+        if !resourceMatch {
+            v.logDebug("Resource does not match - returning false")
+            return false
+        }
+    }
 
-		if !actionMatch {
-			v.logDebug("Action regex does not match - returning false")
-			return false
-		}
-	}
+    if resourceRegexCriteria, ok := criteria["resource_regex"].(string); ok && resourceRegexCriteria != "" {
+        v.logDebug("Checking resources: %v against regex: '%s'", resources, resourceRegexCriteria)
+        
+        re, err := regexp.Compile(resourceRegexCriteria)
+        if err != nil {
+            v.logDebug("Error compiling regex: %v", err)
+            return false
+        }
 
-	// Check Service (extracted from actions, e.g., "s3")
-	if serviceCriteria, ok := criteria["service"].(string); ok && serviceCriteria != "" {
-		serviceMatch := false
-		actions := utils.GetActionsFromStatement(stmt)
-		v.logDebug("Checking actions: %v for service: '%s'", actions, serviceCriteria)
+        resourceMatch := false
+        for _, resource := range resources {
+            v.logDebug("  Checking resource: '%s' against regex: '%s'", resource, resourceRegexCriteria)
+            
 
-		for _, action := range actions {
-			// Handle global wildcard
-			if action == "*" {
-				v.logDebug("  MATCHED: global wildcard")
-				serviceMatch = true
-				break
-			}
+            if resource == "*" {
+                v.logDebug("    MATCHED: global wildcard")
+                resourceMatch = true
+                break
+            }
 
-			parts := strings.Split(action, ":")
-			if len(parts) == 2 {
-				service := parts[0]
-				v.logDebug("  Checking service: '%s' against criteria: '%s'", service, serviceCriteria)
 
-				// Match exact service
-				if service == serviceCriteria {
-					v.logDebug("  MATCHED: exact service match")
-					serviceMatch = true
-					break
-				}
+            if re.MatchString(resource) {
+                v.logDebug("    MATCHED: direct regex")
+                resourceMatch = true
+                break
+            }
 
-				// Match service wildcard (e.g., "service:*")
-				if service == "*" {
-					v.logDebug("  MATCHED: service wildcard")
-					serviceMatch = true
-					break
-				}
-			}
-		}
 
-		if !serviceMatch {
-			v.logDebug("Service does not match - returning false")
-			return false
-		}
-	}
+            if strings.Contains(resource, "*") {
+                v.logDebug("    Resource contains wildcard, expanding")
+                expandedResources := utils.ExpandWildcardResource(resource)
+                
+                for _, expanded := range expandedResources {
+                    if re.MatchString(expanded) {
+                        v.logDebug("      MATCHED: expanded resource")
+                        resourceMatch = true
+                        break
+                    }
+                }
+                
+                if resourceMatch {
+                    break
+                }
+            }
+        }
 
-	// Check Resource (if specified)
-	if resourceCriteria, ok := criteria["resource"].(string); ok && resourceCriteria != "" {
-		resourceMatch := false
-		resources := utils.GetResourcesFromStatement(stmt)
-		v.logDebug("Checking resources: %v against criteria: '%s'", resources, resourceCriteria)
+        if !resourceMatch {
+            v.logDebug("Resource regex does not match - returning false")
+            return false
+        }
+    }
 
-		for _, resource := range resources {
-			v.logDebug("  Checking resource: '%s' against criteria: '%s'", resource, resourceCriteria)
+    if conditionCheck, ok := criteria["has_condition"].(bool); ok {
+        hasCondition := stmt.Condition != nil && stmt.Condition != ""
+        v.logDebug("Checking condition: %v against criteria: %v", hasCondition, conditionCheck)
+        
+        if conditionCheck != hasCondition {
+            v.logDebug("Condition does not match - returning false")
+            return false
+        }
+    }
 
-			// Dokładne sprawdzenie warunków dopasowania zasobu
-			isExactMatch := resource == resourceCriteria
-			isGlobalWildcard := resource == "*"
-
-			v.logDebug("    isExactMatch=%v, isGlobalWildcard=%v", isExactMatch, isGlobalWildcard)
-
-			// Direct match or global wildcard
-			if isExactMatch || isGlobalWildcard {
-				v.logDebug("    MATCHED: exact match or global wildcard")
-				resourceMatch = true
-				break
-			}
-
-			// Check if policy resource has AWS wildcard
-			if strings.Contains(resource, "*") {
-				isPatternMatch := utils.IsResourceMatchingAwsPattern(resourceCriteria, resource)
-				v.logDebug("    Checking pattern match: %v", isPatternMatch)
-				if isPatternMatch {
-					v.logDebug("    MATCHED: pattern match")
-					resourceMatch = true
-					break
-				}
-			}
-		}
-
-		if !resourceMatch {
-			v.logDebug("Resource does not match - returning false")
-			return false
-		}
-	}
-
-	// Check Resource with regex
-	if resourceRegexCriteria, ok := criteria["resource_regex"].(string); ok && resourceRegexCriteria != "" {
-		resourceMatch := false
-		resources := utils.GetResourcesFromStatement(stmt)
-		v.logDebug("Checking resources: %v against regex: '%s'", resources, resourceRegexCriteria)
-
-		re, err := regexp.Compile(resourceRegexCriteria)
-		if err != nil {
-			v.logDebug("Error compiling regex: %v", err)
-			return false
-		}
-
-		for _, resource := range resources {
-			v.logDebug("  Checking resource: '%s' against regex: '%s'", resource, resourceRegexCriteria)
-
-			if resource == "*" {
-				v.logDebug("    MATCHED: global wildcard")
-				resourceMatch = true
-				break
-			}
-
-			// Try direct regex match
-			isMatch := re.MatchString(resource)
-			v.logDebug("    Direct regex match: %v", isMatch)
-			if isMatch {
-				v.logDebug("    MATCHED: direct regex")
-				resourceMatch = true
-				break
-			}
-
-			// Handle AWS-style wildcards
-			if strings.Contains(resource, "*") {
-				v.logDebug("    Resource contains wildcard, expanding")
-				expandedResources := utils.ExpandWildcardResource(resource)
-				v.logDebug("    Expanded resources: %v", expandedResources)
-
-				for _, expanded := range expandedResources {
-					isMatch := re.MatchString(expanded)
-					v.logDebug("      Checking expanded: '%s', match: %v", expanded, isMatch)
-					if isMatch {
-						v.logDebug("      MATCHED: expanded resource")
-						resourceMatch = true
-						break
-					}
-				}
-				if resourceMatch {
-					break
-				}
-			}
-		}
-
-		if !resourceMatch {
-			v.logDebug("Resource regex does not match - returning false")
-			return false
-		}
-	}
-
-	// Check Condition (if specified)
-	if conditionCheck, ok := criteria["has_condition"].(bool); ok {
-		hasCondition := stmt.Condition != nil && stmt.Condition != ""
-		v.logDebug("Checking condition: %v against criteria: %v", hasCondition, conditionCheck)
-		if conditionCheck != hasCondition {
-			v.logDebug("Condition does not match - returning false")
-			return false
-		}
-	}
-	v.logDebug("All criteria matched - returning true")
-	return true
+    v.logDebug("All criteria matched - returning true")
+    return true
 }

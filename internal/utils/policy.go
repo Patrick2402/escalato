@@ -233,19 +233,33 @@ func HasWildcardPrincipal(principals []string) bool {
 	return false
 }
 
-
 // IsActionMatchingAwsPattern checks if an action matches an AWS IAM pattern with wildcards
+// IsActionMatchingAwsPattern sprawdza, czy akcja pasuje do wzorca AWS IAM
 func IsActionMatchingAwsPattern(action, pattern string) bool {
-    // Handle exact match
-    if action == pattern || pattern == "*" {
+    // Obsługa dokładnego dopasowania
+    if action == pattern {
         return true
     }
     
-    // Handle AWS wildcard pattern
+    // Obsługa globalnego wildcard
+    if pattern == "*" {
+        return true
+    }
+    
+    // Obsługa wildcard serwisu (np. cloudtrail:*)
+    if strings.HasSuffix(pattern, ":*") {
+        patternService := strings.TrimSuffix(pattern, ":*")
+        actionParts := strings.Split(action, ":")
+        if len(actionParts) == 2 && actionParts[0] == patternService {
+            return true
+        }
+    }
+    
+    // Obsługa wildcard w akcji (np. cloudtrail:Delete*)
     if strings.Contains(pattern, "*") {
-        // Convert AWS wildcard to regex pattern
-        awsPattern := "^" + strings.Replace(pattern, "*", ".*", -1) + "$"
-        re, err := regexp.Compile(awsPattern)
+        // Zamień * na .* dla regex
+        regexPattern := "^" + strings.Replace(pattern, "*", ".*", -1) + "$"
+        re, err := regexp.Compile(regexPattern)
         if err == nil && re.MatchString(action) {
             return true
         }
@@ -271,76 +285,76 @@ func IsResourceMatchingAwsPattern(resource, pattern string) bool {
     return false
 }
 
-
-
 func IsReadOnlyAction(action string) bool {
-  
-    if action == "*" {
-        return false 
-    }
-    
-    parts := strings.Split(action, ":")
-    if len(parts) != 2 {
-        return false
-    }
-    
-    service := parts[0]
-    actionName := parts[1]
-    
-    // Obsługa wildcard service:* (np. logs:*)
-    if actionName == "*" {
-        return false 
-    }
-    
-    readOnlyPrefixes := []string{
-        "Get", "List", "Describe", "View", "Read", "Check", "Retrieve", 
-        "Monitor", "Detail", "Lookup", "Search", "Find", "Scan", "Batch",
-    }
-    
-    readonlyServiceActions := map[string][]string{
-        "s3": {"GetObject", "GetBucketLocation", "ListBucket", "ListBucketVersions", "GetObjectVersion"},
-        "logs": {"FilterLogEvents", "DescribeLogGroups", "DescribeLogStreams", "GetLogEvents"},
-        "cloudtrail": {"LookupEvents", "GetTrailStatus", "DescribeTrails", "GetEventSelectors"},
-        "lambda": {"GetFunction", "ListFunctions", "GetPolicy", "GetFunctionConfiguration"},
-        "iam": {"GetRole", "GetUser", "GetPolicy", "ListRoles", "ListUsers", "GetRolePolicy"},
-        "sns": {"GetTopicAttributes", "ListTopics", "ListSubscriptions", "GetSubscriptionAttributes"},
-        "cloudwatch": {"GetMetricData", "GetMetricStatistics", "DescribeAlarms", "GetDashboard"},
-        "ec2": {"DescribeInstances", "DescribeImages", "DescribeSecurityGroups", "DescribeVpcs"},
-        "dynamodb": {"GetItem", "Scan", "Query", "DescribeTable", "ListTables"},
-        "kms": {"Decrypt", "DescribeKey", "ListKeys", "GetKeyPolicy", "GetKeyRotationStatus"},
-        "sqs": {"GetQueueAttributes", "ListQueues", "ReceiveMessage", "GetQueueUrl"},
-        "secretsmanager": {"GetSecretValue", "DescribeSecret", "ListSecrets"},
-        "ssm": {"GetParameter", "GetParameters", "DescribeParameters"},
-    }
-    
-    nonReadonlyActions := []string{
-        "Delete", "Put", "Create", "Update", "Modify", "Remove", "Apply", "Set", "Start", "Stop",
-        "Deploy", "Cancel", "Execute", "Run", "Enable", "Disable", "Register", "Deregister",
-        "Associate", "Disassociate", "Attach", "Detach", "Add", "Upload", "Write", "Copy", 
-        "Move", "Restore", "Send", "Tag", "Untag", "Publish",
-    }
-    
-    for _, prefix := range nonReadonlyActions {
-        if strings.HasPrefix(actionName, prefix) {
-            return false
-        }
-    }
-    
-    for _, prefix := range readOnlyPrefixes {
-        if strings.HasPrefix(actionName, prefix) {
-            return true
-        }
-    }
-    
-    if specificActions, exists := readonlyServiceActions[service]; exists {
-        for _, safeAction := range specificActions {
-            if actionName == safeAction {
-                return true
-            }
-        }
-    }
-    
-    return false
+	// Obsługa globalnego wildcard i dopasowań ze znakiem *
+	if action == "*" {
+		return false // Traktuj * jako akcję non-read-only
+	}
+	
+	parts := strings.Split(action, ":")
+	if len(parts) != 2 {
+		return false
+	}
+	
+	service := parts[0]
+	actionName := parts[1]
+	
+	if actionName == "*" {
+		return false 
+	}
+	
+	readOnlyPrefixes := []string{
+		"Get", "List", "Describe", "View", "Read", "Check", "Retrieve", 
+		"Monitor", "Detail", "Lookup", "Search", "Find", "Scan", "Batch",
+	}
+	
+	readonlyServiceActions := map[string][]string{
+		"s3": {"GetObject", "GetBucketLocation", "ListBucket", "ListBucketVersions", "GetObjectVersion"},
+		"logs": {"FilterLogEvents", "DescribeLogGroups", "DescribeLogStreams", "GetLogEvents"},
+		"cloudtrail": {"LookupEvents", "GetTrailStatus", "DescribeTrails", "GetEventSelectors"},
+		"lambda": {"GetFunction", "ListFunctions", "GetPolicy", "GetFunctionConfiguration"},
+		"iam": {"GetRole", "GetUser", "GetPolicy", "ListRoles", "ListUsers", "GetRolePolicy"},
+		"sns": {"GetTopicAttributes", "ListTopics", "ListSubscriptions", "GetSubscriptionAttributes"},
+		"cloudwatch": {"GetMetricData", "GetMetricStatistics", "DescribeAlarms", "GetDashboard"},
+		"ec2": {"DescribeInstances", "DescribeImages", "DescribeSecurityGroups", "DescribeVpcs"},
+		"dynamodb": {"GetItem", "Scan", "Query", "DescribeTable", "ListTables"},
+		"kms": {"Decrypt", "DescribeKey", "ListKeys", "GetKeyPolicy", "GetKeyRotationStatus"},
+		"sqs": {"GetQueueAttributes", "ListQueues", "ReceiveMessage", "GetQueueUrl"},
+		"secretsmanager": {"GetSecretValue", "DescribeSecret", "ListSecrets"},
+		"ssm": {"GetParameter", "GetParameters", "DescribeParameters"},
+	}
+	
+	nonReadonlyActions := []string{
+		"Delete", "Put", "Create", "Update", "Modify", "Remove", "Apply", "Set", "Start", "Stop",
+		"Deploy", "Cancel", "Execute", "Run", "Enable", "Disable", "Register", "Deregister",
+		"Associate", "Disassociate", "Attach", "Detach", "Add", "Upload", "Write", "Copy", 
+		"Move", "Restore", "Send", "Tag", "Untag", "Publish",
+	}
+	
+	for _, prefix := range nonReadonlyActions {
+		if strings.HasPrefix(actionName, prefix) {
+			return false
+		}
+	}
+	
+	// Obsługa znanych prefiksów
+	for _, prefix := range readOnlyPrefixes {
+		if strings.HasPrefix(actionName, prefix) {
+			return true
+		}
+	}
+	
+	// Obsługa specyficznych akcji dla serwisu
+	if specificActions, exists := readonlyServiceActions[service]; exists {
+		for _, safeAction := range specificActions {
+			if actionName == safeAction {
+				return true
+			}
+		}
+	}
+	
+	// Domyślnie, jeśli nie jesteśmy w stanie jednoznacznie określić - traktuj jako non-read-only
+	return false
 }
 
 func ExpandWildcardResource(wildcardResource string) []string {
@@ -354,7 +368,14 @@ func ExpandWildcardResource(wildcardResource string) []string {
 	
 	if strings.HasPrefix(wildcardResource, "arn:aws:") {
 		if strings.Contains(wildcardResource, ":*") {
+			// Zastąp jeden z wildcardów przykładową wartością
 			result := strings.Replace(wildcardResource, ":*", ":example", 1)
+			return []string{result, wildcardResource}
+		}
+		
+		if strings.Contains(wildcardResource, "/*") {
+			// Zastąp wildcard przykładową wartością
+			result := strings.Replace(wildcardResource, "/*", "/example-resource", 1)
 			return []string{result, wildcardResource}
 		}
 	}
@@ -372,54 +393,84 @@ func ExpandWildcardAction(wildcardAction string) []string {
 	action := parts[1]
 	
 	if action == "*" {
+		// Przykładowe akcje dla popularnych serwisów, z podziałem na read-only i modyfikujące
 		switch service {
 		case "s3":
-			return []string{"s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"}
-		case "ec2":
-			return []string{"ec2:DescribeInstances", "ec2:RunInstances", "ec2:TerminateInstances"}
-		case "iam":
-			return []string{"iam:CreateUser", "iam:GetUser", "iam:ListUsers", "iam:DeleteUser"}
-		case "logs":
-			return []string{"logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutLogEvents", "logs:GetLogEvents"}
-		case "lambda":
-			return []string{"lambda:CreateFunction", "lambda:InvokeFunction", "lambda:GetFunction", "lambda:UpdateFunctionCode"}
-		case "dynamodb":
-			return []string{"dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:Query"}
-		default:
 			return []string{
-				service + ":Get", 
-				service + ":List", 
-				service + ":Create", 
-				service + ":Delete", 
-				service + ":Update",
+				// Read-only examples
+				"s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation",
+				// Modifying examples
+				"s3:PutObject", "s3:DeleteObject", "s3:CreateBucket", "s3:DeleteBucket",
+			}
+		case "ec2":
+			return []string{
+				// Read-only examples
+				"ec2:DescribeInstances", "ec2:DescribeImages", "ec2:DescribeVpcs",
+				// Modifying examples
+				"ec2:RunInstances", "ec2:TerminateInstances", "ec2:CreateVpc", "ec2:DeleteVpc",
+			}
+		case "iam":
+			return []string{
+				// Read-only examples
+				"iam:GetUser", "iam:ListUsers", "iam:GetRole", "iam:ListRoles",
+				// Modifying examples
+				"iam:CreateUser", "iam:DeleteUser", "iam:CreateRole", "iam:DeleteRole", "iam:PutRolePolicy",
+			}
+		case "logs":
+			return []string{
+				// Read-only examples
+				"logs:GetLogEvents", "logs:DescribeLogGroups", "logs:DescribeLogStreams",
+				// Modifying examples
+				"logs:CreateLogGroup", "logs:DeleteLogGroup", "logs:PutLogEvents", "logs:DeleteLogStream",
+			}
+		case "lambda":
+			return []string{
+				// Read-only examples
+				"lambda:GetFunction", "lambda:ListFunctions", "lambda:GetPolicy",
+				// Modifying examples
+				"lambda:CreateFunction", "lambda:DeleteFunction", "lambda:UpdateFunctionCode", "lambda:InvokeFunction",
+			}
+		case "dynamodb":
+			return []string{
+				// Read-only examples
+				"dynamodb:GetItem", "dynamodb:Scan", "dynamodb:Query", "dynamodb:DescribeTable",
+				// Modifying examples
+				"dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:CreateTable", "dynamodb:DeleteTable",
+			}
+		default:
+			// Ogólne przykłady
+			return []string{
+				// Read-only examples
+				service + ":Get", service + ":List", service + ":Describe", service + ":View", 
+				// Modifying examples
+				service + ":Create", service + ":Delete", service + ":Update", service + ":Modify",
 			}
 		}
 	} else if strings.HasPrefix(action, "*") {
 		suffix := action[1:]
 		return []string{
-			service + ":Get" + suffix,
-			service + ":List" + suffix,
-			service + ":Create" + suffix,
-			service + ":Update" + suffix,
+			// Read-only examples with suffix
+			service + ":Get" + suffix, service + ":List" + suffix, service + ":Describe" + suffix,
+			// Modifying examples with suffix
+			service + ":Create" + suffix, service + ":Delete" + suffix, service + ":Update" + suffix,
 		}
 	} else if strings.HasSuffix(action, "*") {
 		prefix := action[:len(action)-1]
 		return []string{
-			service + ":" + prefix + "Function",
-			service + ":" + prefix + "Resource",
-			service + ":" + prefix + "Object",
-			service + ":" + prefix + "Item",
+			// Examples with prefix
+			service + ":" + prefix + "Object", service + ":" + prefix + "Resource",
+			service + ":" + prefix + "Function", service + ":" + prefix + "Instance",
 		}
 	} else if strings.Contains(action, "*") {
+		// Złożone wzorce
 		parts := strings.Split(action, "*")
 		if len(parts) == 2 {
 			prefix := parts[0]
 			suffix := parts[1]
 			return []string{
-				service + ":" + prefix + "Function" + suffix,
-				service + ":" + prefix + "Resource" + suffix,
-				service + ":" + prefix + "Object" + suffix,
-				service + ":" + prefix + "Item" + suffix,
+				// Examples with prefix and suffix
+				service + ":" + prefix + "Object" + suffix, service + ":" + prefix + "Resource" + suffix,
+				service + ":" + prefix + "Function" + suffix, service + ":" + prefix + "Instance" + suffix,
 			}
 		}
 	}
@@ -434,4 +485,95 @@ func Contains(arr []string, str string) bool {
 		}
 	}
 	return false
+}
+
+
+func ShouldMatchServiceAction(action, pattern string) bool {
+	if IsReadOnlyAction(action) {
+		dangerousPatterns := []string{
+			"Delete", "Create", "Update", "Modify", "Put", "Remove", "Set", 
+			"Enable", "Disable", "Register", "Deregister", "Associate", 
+			"Disassociate", "Attach", "Detach",
+		}
+		
+		for _, dp := range dangerousPatterns {
+			if strings.Contains(pattern, dp) {
+				return false
+			}
+		}
+	}
+	
+	return true
+}
+
+func IsServiceMatchingRegex(service, pattern string) bool {
+	if strings.Contains(pattern, service+":") {
+		return true
+	}
+	
+	serviceGroupPattern := regexp.MustCompile(`\((.*?)\):`)
+	matches := serviceGroupPattern.FindStringSubmatch(pattern)
+	if len(matches) > 1 {
+		servicesGroup := matches[1]
+		services := strings.Split(servicesGroup, "|")
+		for _, s := range services {
+			if s == service {
+				return true
+			}
+		}
+	}
+	
+	return false
+}
+
+// check if action with wilkdcard matches regex pattern
+func IsWildcardActionMatchingRegex(wildCardAction, regexPattern string) bool {
+	// global wildcard - always matches
+    if wildCardAction == "*" {
+        return true
+    }
+    
+    // if no wildcard in action, check if it matches the regex
+    if !strings.Contains(wildCardAction, "*") {
+        re, err := regexp.Compile(regexPattern)
+        return err == nil && re.MatchString(wildCardAction)
+    }
+    
+    // check format service:* 
+    if strings.HasSuffix(wildCardAction, ":*") {
+        service := strings.TrimSuffix(wildCardAction, ":*")
+        return strings.Contains(regexPattern, service+":")
+    }
+    
+    // Check  service:Prefix* e.g. cloudtrail:Delete*
+    prefixEndIndex := strings.Index(wildCardAction, "*")
+    if prefixEndIndex > 0 {
+		// Extract the prefix from the wildcard action
+        actionPrefix := wildCardAction[:prefixEndIndex]
+        
+        parts := strings.Split(wildCardAction, ":")
+        if len(parts) == 2 && strings.Contains(regexPattern, parts[0]+":") {
+            re := regexp.MustCompile(`\(([^)]+)\)`)
+            matches := re.FindAllStringSubmatch(regexPattern, -1)
+            
+            for _, match := range matches {
+                if len(match) > 1 {
+                    options := strings.Split(match[1], "|")
+                    for _, option := range options {
+                        // check if the action prefix matches the option
+                        fullOption := parts[0] + ":" + option
+                        if strings.HasPrefix(fullOption, actionPrefix) {
+                            return true
+                        }
+                    }
+                }
+            }
+            
+            if !strings.Contains(regexPattern, "(") && !strings.Contains(regexPattern, ")") {
+                return strings.Contains(regexPattern, actionPrefix)
+            }
+        }
+    }
+    
+    return false
 }
