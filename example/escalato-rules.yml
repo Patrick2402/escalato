@@ -1,7 +1,9 @@
 # # Escalato Security Rules
 # # This file defines security rules for AWS IAM configurations using the new flexible rule engine
 excluded_roles:
-  - adminadmin
+  - Rackspace
+  - AWSReservedSSO_541889288027-ops-power-user_0d72a2b30c281563
+  - AWSReservedSSO_541889288027-AdministratorAccess_7d829ee48b5506a1
 excluded_users:
   - example-user
 
@@ -345,23 +347,302 @@ rules:
 #     - level: LOW
 #       default: true
 
-- id: sensitive_s3_actions
-  name: "Sensitive S3 Actions"
-  description: "Role has permissions to perform sensitive S3 operations"
-  severity: HIGH
+# - id: sensitive_s3_actions
+#   name: "Sensitive S3 Actions"
+#   description: "Role has permissions to perform sensitive S3 operations"
+#   severity: HIGH
+#   resource_type: Role
+#   conditions:
+#     - type: ALL_POLICIES 
+#       match:
+#         statement_effect: "Allow"
+#         action_regex: "s3:PutObject"
+#         resource: "*"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_global_wildcard"
+#     - level: MEDIUM
+#       when: "has_leading_or_trailing_wildcard"
+#     - level: LOW
+#       when: "has_wildcard_resource"
+#     - level: LOW
+#       default: true
+
+# TO DO CHECK
+# - id: eventbridge_invoke_risk
+#   name: "EventBridge Invoke Risk"
+#   description: "Role can invoke arbitrary targets via EventBridge, potentially enabling privilege escalation"
+#   severity: HIGH
+#   resource_type: Role
+#   conditions:
+#     - type: ALL_POLICIES
+#       match:
+#         statement_effect: "Allow"
+#         action: "events:PutTargets"
+#         resource: "*"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_global_wildcard"
+#     - level: MEDIUM
+#       default: true
+
+
+# - id: cloudtrail_modification
+#   name: "CloudTrail Modification Risk"
+#   description: "Role can modify CloudTrail configurations which may affect logging and auditing"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: ALL_POLICIES
+#       match:
+#         statement_effect: "Allow"
+#         action_regex: "cloudtrail:(StopLogging|DeleteTrail|UpdateTrail|PutEventSelectors)"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource"
+#     - level: MEDIUM
+#       default: true
+
+
+# - id: lambda_permissions_risk
+#   name: "Lambda Function Permissions Risk"
+#   description: "Role can update Lambda function code, which can be used for privilege escalation"
+#   severity: HIGH
+#   resource_type: Role
+#   conditions:
+#     - type: ALL_POLICIES
+#       match:
+#         statement_effect: "Allow"
+#         action_regex: "lambda:(UpdateFunctionCode|CreateFunction)"
+#         resource: "*"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_global_wildcard"
+#     - level: MEDIUM
+#       when: "has_wildcard_resource"
+#     - level: LOW
+#       default: true
+
+
+# - id: backdoor_risk
+#   name: "Potential Backdoor Risk"
+#   description: "Role has permissions to create persistent access mechanisms"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: ALL_POLICIES
+#       match:
+#         statement_effect: "Allow"
+#         action_regex: "(iam:CreateUser|iam:CreateAccessKey|iam:CreateLoginProfile|iam:UpdateLoginProfile)"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource"
+#     - level: MEDIUM
+#       default: true
+
+
+# - id: iam_privilege_escalation_path
+#   name: "IAM Privilege Escalation Path"
+#   description: "Role has permissions that enable classic privilege escalation patterns through IAM"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: AND
+#       conditions:
+#         - type: OR
+#           conditions:
+#             - type: ALL_POLICIES
+#               match:
+#                 statement_effect: "Allow"
+#                 action_regex: "iam:(Create|Put|Update|Attach).*Policy.*"
+#             - type: ALL_POLICIES
+#               match:
+#                 statement_effect: "Allow"
+#                 action_regex: "iam:(Create|Update)Role"
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "iam:UpdateAssumeRolePolicy"
+#         - type: ALL_POLICIES
+#           match:
+#             statement_effect: "Allow"
+#             action: "sts:AssumeRole"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource && non_read_only_count > 3"
+#     - level: MEDIUM
+#       when: "has_wildcard_resource"
+#     - level: LOW
+#       default: true
+
+
+
+
+# - id: ec2_instance_takeover
+#   name: "EC2 Instance Control for Metadata Credentials"
+#   description: "Role can control EC2 instances and potentially access instance profiles for credential theft"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: AND
+#       conditions:
+#         - type: OR
+#           conditions:
+#             - type: ALL_POLICIES
+#               match:
+#                 action_regex: "ec2:(Get|Send).*Console.*"
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "ssm:SendCommand"
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "ec2:RunCommand"
+#             - type: ALL_POLICIES
+#               match:
+#                 action_regex: "ec2:.*UserData"
+#         - type: ALL_POLICIES
+#           match:
+#             action_regex: "(iam:PassRole|ec2:AssociateIamInstanceProfile)"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource"
+#     - level: MEDIUM
+#       default: true
+
+
+
+
+# - id: lambda_passrole_escalation
+#   name: "Lambda Pass Role Privilege Escalation"
+#   description: "Role can create Lambda functions with custom execution roles, enabling privilege escalation"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: AND
+#       conditions:
+#         - type: ALL_POLICIES
+#           match:
+#             statement_effect: "Allow"
+#             action_regex: "lambda:(CreateFunction|UpdateFunctionCode|UpdateFunctionConfiguration)"
+#         - type: ALL_POLICIES
+#           match:
+#             statement_effect: "Allow"
+#             action: "iam:PassRole"
+#         - type: OR
+#           conditions:
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "lambda:InvokeFunction"
+#             - type: ALL_POLICIES
+#               match:
+#                 action_regex: "lambda:.*EventSourceMapping"
+#             - type: ALL_POLICIES
+#               match:
+#                 action_regex: "events:Put.*"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource"
+#     - level: MEDIUM
+#       default: true
+
+
+
+# - id: cloudformation_privilege_escalation
+#   name: "CloudFormation Privilege Escalation"
+#   description: "Role can deploy arbitrary CloudFormation templates with custom service roles"
+#   severity: CRITICAL
+#   resource_type: Role
+#   conditions:
+#     - type: AND
+#       conditions:
+#         - type: ALL_POLICIES
+#           match:
+#             statement_effect: "Allow"
+#             action_regex: "cloudformation:(Create|Update)Stack"
+#         - type: ALL_POLICIES
+#           match:
+#             statement_effect: "Allow"
+#             action: "iam:PassRole"
+#         - type: OR
+#           conditions:
+#             - type: ALL_POLICIES
+#               match:
+#                 resource: "*"
+#             - type: ALL_POLICIES
+#               match:
+#                 resource_regex: "arn:aws:iam:.*:role/.*"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource"
+#     - level: MEDIUM
+#       default: true
+
+
+- id: logging_reconfiguration_escalation
+  name: "Logging Reconfiguration for Privilege Escalation"
+  description: "Role can modify logging configurations to hide malicious activity during privilege escalation"
+  severity: CRITICAL
   resource_type: Role
   conditions:
-    - type: ALL_POLICIES 
-      match:
-        statement_effect: "Allow"
-        action_regex: "s3:PutObject"
-        resource: "*"
+    - type: AND
+      conditions:
+        - type: OR
+          conditions:
+            - type: ALL_POLICIES
+              match:
+                action_regex: "cloudtrail:(Stop|Delete|Update)Trail"
+            - type: ALL_POLICIES
+              match:
+                action_regex: "logs:(Delete|Disable).*"
+            - type: ALL_POLICIES
+              match:
+                action_regex: "cloudwatch:(Delete|Disable).*"
+        - type: OR
+          conditions:
+            - type: ALL_POLICIES
+              match:
+                action_regex: "(ec2|lambda|iam|dynamodb|s3):.*"
+            - type: ALL_POLICIES
+              match:
+                action: "*"
   confidence_rules:
     - level: HIGH
       when: "has_global_wildcard"
     - level: MEDIUM
-      when: "has_leading_or_trailing_wildcard"
-    - level: LOW
       when: "has_wildcard_resource"
     - level: LOW
       default: true
+
+
+
+# - id: api_gateway_lambda_escalation
+#   name: "API Gateway Lambda Privilege Escalation Chain"
+#   description: "Role can modify API Gateway configurations and Lambda functions enabling privilege escalation"
+#   severity: HIGH
+#   resource_type: Role
+#   conditions:
+#     - type: AND
+#       conditions:
+#         - type: ALL_POLICIES
+#           match:
+#             action_regex: "apigateway:(PUT|POST|PATCH)"
+#         - type: ALL_POLICIES
+#           match:
+#             action_regex: "lambda:(Create|Update)Function"
+#         - type: ALL_POLICIES
+#           match:
+#             action: "iam:PassRole"
+#         - type: OR
+#           conditions:
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "lambda:InvokeFunction"
+#             - type: ALL_POLICIES
+#               match:
+#                 action: "execute-api:Invoke"
+#   confidence_rules:
+#     - level: HIGH
+#       when: "has_wildcard_resource && non_read_only_count > 5"
+#     - level: MEDIUM
+#       when: "has_wildcard_resource"
+#     - level: LOW
+#       default: true
