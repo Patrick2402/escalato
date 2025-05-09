@@ -7,11 +7,13 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	
+
 	"escalato/internal/aws"
 	"escalato/internal/models"
 	"escalato/internal/rules"
 	"escalato/internal/validator"
+
+	"github.com/fatih/color"
 )
 
 var (
@@ -48,25 +50,25 @@ var validateCmd = &cobra.Command{
 			er(fmt.Sprintf("Error loading rules: %v", err))
 		}
 
-		fmt.Printf("Loaded %d rules from %s\n", len(ruleSet.Rules), rulesFile)
+		color.Cyan("Loaded %d rules from %s\n", len(ruleSet.Rules), rulesFile)
 
 		// Fetch IAM data
-		fmt.Println("Fetching IAM roles...")
+		color.Green("Fetching IAM roles...")
 		awsRoles, err := aws.GetIAMRoles(context.Background(), client.IAMClient, true, true, true)
 		if err != nil {
 			er(fmt.Sprintf("Error fetching IAM roles: %v", err))
 		}
 
-		fmt.Println("Fetching IAM users...")
+		color.Yellow("Fetching IAM users...")
 		awsUsers, err := aws.GetIAMUsers(context.Background(), client.IAMClient, true, true, true, true)
 		if err != nil {
 			er(fmt.Sprintf("Error fetching IAM users: %v", err))
 		}
 
-		fmt.Printf("Retrieved %d roles and %d users\n", len(awsRoles), len(awsUsers))
+		color.Red("Retrieved %d roles and %d users\n", len(awsRoles), len(awsUsers))
 
 		// Fetch policy documents
-		fmt.Println("Fetching managed policy documents...")
+		color.Green("Fetching managed policy documents...")
 		for i := range awsRoles {
 			if err := client.UpdateRolePoliciesWithDocuments(context.Background(), &awsRoles[i]); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: Error fetching managed policies for role %s: %v\n",
@@ -106,7 +108,7 @@ var validateCmd = &cobra.Command{
 				skippedRoles++
 				continue
 			}
-			
+
 			// Skip roles in the exclusion list
 			if excludedRoles[awsRoles[i].RoleName] {
 				if enableDiagnostics {
@@ -115,10 +117,10 @@ var validateCmd = &cobra.Command{
 				excludedRolesCount++
 				continue
 			}
-			
+
 			resources = append(resources, &awsRoles[i])
 		}
-		
+
 		excludedUsersCount := 0
 		for i := range awsUsers {
 			// Skip users in the exclusion list
@@ -129,7 +131,7 @@ var validateCmd = &cobra.Command{
 				excludedUsersCount++
 				continue
 			}
-			
+
 			resources = append(resources, &awsUsers[i])
 		}
 
@@ -145,14 +147,14 @@ var validateCmd = &cobra.Command{
 
 		// Create validator registry and rule engine
 		validatorRegistry := rules.NewValidatorRegistry(enableDiagnostics)
-		
+
 		// Register all validators
 		registerValidators(validatorRegistry, enableDiagnostics)
-		
+
 		ruleEngine := rules.NewRuleEngine(validatorRegistry, enableDiagnostics)
 
 		// Run validation
-		fmt.Println("Running validation...")
+		color.Green("Running validation...")
 		validationResults, err := ruleEngine.ValidateAll(ruleSet, resources)
 		if err != nil {
 			er(fmt.Sprintf("Error during validation: %v", err))
@@ -164,12 +166,12 @@ var validateCmd = &cobra.Command{
 		// Display filtering info if any filters were applied
 		if minConfidenceLevel != "" || minSeverityLevel != "" {
 			if minConfidenceLevel != "" && minSeverityLevel != "" {
-				fmt.Printf("Filtered results to minimum severity: %s and minimum confidence: %s\n",
+				color.Yellow("Filtered results to minimum severity: %s and minimum confidence: %s\n",
 					minSeverityLevel, minConfidenceLevel)
 			} else if minConfidenceLevel != "" {
-				fmt.Printf("Filtered results to minimum confidence: %s\n", minConfidenceLevel)
+				color.Yellow("Filtered results to minimum confidence: %s\n", minConfidenceLevel)
 			} else if minSeverityLevel != "" {
-				fmt.Printf("Filtered results to minimum severity: %s\n", minSeverityLevel)
+				color.Yellow("Filtered results to minimum severity: %s\n", minSeverityLevel)
 			}
 		}
 
@@ -178,11 +180,10 @@ var validateCmd = &cobra.Command{
 
 		// Export to JSON if requested
 		if outputJson != "" {
-			fmt.Printf("Exporting results to %s...\n", outputJson)
+			color.Yellow("Exporting results to %s...\n", outputJson)
 			if err := validator.ExportToJSON(filteredResults, outputJson); err != nil {
 				er(fmt.Sprintf("Failed to export results to JSON: %v", err))
 			}
-			fmt.Printf("Results exported to %s\n", outputJson)
 		}
 	},
 }
@@ -193,12 +194,12 @@ func isAWSManagedRole(roleName, rolePath string) bool {
 	if strings.Contains(rolePath, "/aws-service-role/") {
 		return true
 	}
-	
+
 	// Check for AWSServiceRole prefix (specifically for AWS service roles)
 	if strings.HasPrefix(roleName, "AWSServiceRole") {
 		return true
 	}
-	
+
 	// Check for specific AWS prefixes (not ALL AWS prefixes)
 	awsPrefixes := []string{
 		"AWSServiceRoleFor",
@@ -206,18 +207,18 @@ func isAWSManagedRole(roleName, rolePath string) bool {
 		"AmazonSSM",
 		"AmazonMQ",
 	}
-	
+
 	for _, prefix := range awsPrefixes {
 		if strings.HasPrefix(roleName, prefix) {
 			return true
 		}
 	}
-	
+
 	// DO NOT skip SSO roles - they may have important permissions
 	if strings.Contains(roleName, "AWSReservedSSO") {
 		return false
 	}
-	
+
 	// Other typical AWS roles
 	awsRoles := []string{
 		"OrganizationAccountAccessRole",
@@ -227,13 +228,13 @@ func isAWSManagedRole(roleName, rolePath string) bool {
 		"ecsTaskExecutionRole",
 		"rds-monitoring-role",
 	}
-	
+
 	for _, role := range awsRoles {
 		if strings.EqualFold(roleName, role) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -241,34 +242,25 @@ func isAWSManagedRole(roleName, rolePath string) bool {
 // In the registerValidators function add:
 func registerValidators(registry *rules.ValidatorRegistry, diagnostics bool) {
 	// Logic validators
-	registry.RegisterValidator(models.AndCondition, 
-		validator.NewAndValidator(registry, diagnostics))
-	registry.RegisterValidator(models.OrCondition, 
-		validator.NewOrValidator(registry, diagnostics))
-	registry.RegisterValidator(models.NotCondition, 
-		validator.NewNotValidator(registry, diagnostics))
-	
+	registry.RegisterValidator(models.AndCondition, validator.NewAndValidator(registry, diagnostics))
+	registry.RegisterValidator(models.OrCondition, validator.NewOrValidator(registry, diagnostics))
+	registry.RegisterValidator(models.NotCondition, validator.NewNotValidator(registry, diagnostics))
+
 	// Resource validators
-	registry.RegisterValidator(models.ResourcePropertyCondition, 
-		validator.NewResourcePropertyValidator(diagnostics))
-	registry.RegisterValidator(models.PatternMatchCondition, 
-		validator.NewPatternMatchValidator(diagnostics))
-	
+	registry.RegisterValidator(models.ResourcePropertyCondition, validator.NewResourcePropertyValidator(diagnostics))
+	registry.RegisterValidator(models.PatternMatchCondition, validator.NewPatternMatchValidator(diagnostics))
+
 	// Policy validators
-	registry.RegisterValidator(models.PolicyDocumentCondition, 
-		validator.NewPolicyDocumentValidator(diagnostics))
-	
+	registry.RegisterValidator(models.PolicyDocumentCondition, validator.NewPolicyDocumentValidator(diagnostics))
+
 	// All policies validator
-	registry.RegisterValidator(models.AllPoliciesCondition, 
-		validator.NewAllPoliciesValidator(diagnostics))
-	
+	registry.RegisterValidator(models.AllPoliciesCondition, validator.NewAllPoliciesValidator(diagnostics))
+
 	// Time validators
-	registry.RegisterValidator(models.AgeCondition, 
-		validator.NewAgeValidator(diagnostics))
-		
+	registry.RegisterValidator(models.AgeCondition, validator.NewAgeValidator(diagnostics))
+
 	// Unused permissions validator
-	registry.RegisterValidator(models.UnusedPermissionsCondition, 
-		validator.NewUnusedPermissionsValidator(diagnostics))
+	registry.RegisterValidator(models.UnusedPermissionsCondition, validator.NewUnusedPermissionsValidator(diagnostics))
 }
 
 // filterResults filters validation results by confidence and severity
